@@ -7,7 +7,7 @@
 
 ## 📌 Prosjektbeskrivelse
 
-Prosesskunnskap ved Glencore Nikkelverk AS er i dag spredt på mange ulike kilder og ofte personavhengig. Dette innebærer risiko for tap av kritisk kompetanse og gjør informasjon vanskelig tilgjengelig for ansatte.
+Prosesskunnskap ved Glencore Nikkelverk AS er i dag spredt på mange ulike kilder og ofte personavhengig. Dette innebærer risiko for tap av kompetanse og gjør informasjon vanskelig tilgjengelig for ansatte.
 
 Dette prosjektet har som mål å utvikle en **KI-basert agent kombinert med en strukturert kunnskapsbank** for å:
 - bevare kritisk prosesskunnskap
@@ -132,6 +132,7 @@ Utvikling av chatbot eller brukergrensesnitt for søk er **ikke** del av oppgave
 2. Kunnskapsbank i valgt råformat + generert HTML-versjon
 3. Dokumentasjon og forslag til videreutvikling  
    (f.eks. chatbot-grensesnitt)
+
 
 
 

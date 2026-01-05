@@ -1,5 +1,3 @@
-﻿# KI-agent og kunnskapsbank for prosesskunnskap
-
 # KI-agent og kunnskapsbank for prosesskunnskap  
 **Prosjekt nr. 6 – Bachelor/Masteroppgave**
 
@@ -134,5 +132,6 @@ Utvikling av chatbot eller brukergrensesnitt for søk er **ikke** del av oppgave
 2. Kunnskapsbank i valgt råformat + generert HTML-versjon
 3. Dokumentasjon og forslag til videreutvikling  
    (f.eks. chatbot-grensesnitt)
+
 
 

@@ -91,17 +91,7 @@ Utvikling av chatbot eller brukergrensesnitt for søk er **ikke** del av oppgave
 
 ---
 
-## 👥 Hvem passer oppgaven for
 
-### Primært
-- **Bachelor – Dataingeniør / Datateknikk**  
-  Parsering, API-integrasjon, dokumentstruktur
-- **Master – Kunstig intelligens / IKT**  
-  Agentlogikk, evaluering, arkitektur
-
-### Sekundært
-- Cybersikkerhet (tilgangsstyring, logging)
-- Multimedieteknologi (enkel HTML-visning – opsjon)
 
 **Forkunnskaper:**
 - Python
@@ -134,19 +124,3 @@ Utvikling av chatbot eller brukergrensesnitt for søk er **ikke** del av oppgave
 3. Dokumentasjon og forslag til videreutvikling  
    (f.eks. chatbot-grensesnitt)
 
----
-
-## 📇 Kontakt
-
-**Kontaktperson:**  
-Martin Larsen  
-📧 m@glencore.no
-
----
-
-## 📄 Lisens og konfidensialitet
-
-Dette prosjektet benytter interne dokumenter fra Glencore Nikkelverk AS.  
-Håndtering av data skal skje i henhold til gjeldende retningslinjer og avtaler.
-
----

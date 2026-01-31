@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Generated / local data
+/data/uploads/
+/data/suggestions/
+/data/normalized/
+
+# Generated site output
+/knowledge_base/html/
+
+# OS / IDE
+.vscode/
+.DS_Store

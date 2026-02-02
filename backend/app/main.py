@@ -4,16 +4,16 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.pretty import Pretty
 
-from .apply import apply_approved
-from .config import get_settings
-from .html import build_html
-from .ingest import ingest_inputs
-from .kb_vector import index_knowledge_base, search_knowledge_base
-from .normalize import normalize_uploads
-from .review import review_suggestions
-from .suggest import generate_suggestions
+from .pipeline import (
+    apply_approved,
+    build_html,
+    generate_suggestions,
+    get_settings,
+    ingest_inputs,
+    normalize_uploads,
+    review_suggestions,
+)
 
 app = typer.Typer(add_completion=False, help="KI-agent pipeline (MVP)")
 console = Console()
@@ -59,27 +59,6 @@ def build_html_cmd():
     settings = get_settings()
     outputs = build_html(settings.kb_raw_dir, settings.kb_html_dir)
     console.print(f"Built {len(outputs)} HTML file(s) in {settings.kb_html_dir}")
-
-
-@app.command(name="index-kb")
-def index_kb_cmd():
-    """Index the knowledge base into the configured vector database."""
-
-    settings = get_settings()
-    count = index_knowledge_base(settings)
-    console.print(f"Indexed {count} chunk(s) into vector store ({settings.vector_provider}).")
-
-
-@app.command(name="search")
-def search_cmd(
-    query: str = typer.Argument(..., help="Search query"),
-    top_k: int = typer.Option(5, min=1, max=20, help="Number of results"),
-):
-    """Semantic search over the indexed knowledge base."""
-
-    settings = get_settings()
-    results = search_knowledge_base(settings, query=query, top_k=top_k)
-    console.print(Pretty(results, expand_all=False))
 
 
 if __name__ == "__main__":

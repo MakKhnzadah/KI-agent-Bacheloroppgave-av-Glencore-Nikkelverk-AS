@@ -1,7 +1,7 @@
 # Datamodell (praktisk filbasert)
 
 ## Kunnskapsdokument (Markdown + YAML front matter)
-Hvert dokument er en `.md`-fil i `knowledge_base/raw`.
+Hvert dokument er en `.md`-fil i `databases/knowledge_base/raw`.
 
 **Anbefalte metadatafelt**
 - `id`: stabil ID (slug)
@@ -15,7 +15,7 @@ Hvert dokument er en `.md`-fil i `knowledge_base/raw`.
 - `confidence`: valgfritt (0–1) for hvor sikker teksten er
 
 ## Forslag (Suggestion)
-Forslag lagres som JSON i `data/suggestions/` (generert, ikke i Git).
+Forslag lagres som JSON i `databases/data/suggestions/` (generert, ikke i Git).
 
 Minste felt
 - `suggestion_id`
@@ -27,4 +27,4 @@ Minste felt
 - `citations`: referanser til inputkilder (side/avsnitt hvis mulig)
 
 ## Normalisert tekst (internt)
-Normaliserte mellomprodukter kan lagres i `data/normalized/` for sporbarhet.
+Normaliserte mellomprodukter kan lagres i `databases/data/normalized/` for sporbarhet.

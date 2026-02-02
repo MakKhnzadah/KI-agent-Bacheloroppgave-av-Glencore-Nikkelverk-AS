@@ -3,8 +3,8 @@
 ## Aktører
 - **Employee/User**: Leser kunnskapsbank (HTML).
 - **Expert User**: Laster opp dokumenter, vurderer forslag, godkjenner/avviser, initierer lagring.
-- **Language Model Service (Microsoft/OpenAI)**: Tekstforståelse og forslag.
-- **Storage/Repository (Azure/Git)**: Lagring/versjonering av kunnskapsbank og forslag.
+- **Language Model Service (OpenAI-kompatibel, evt. lokal)**: Tekstforståelse og forslag.
+- **Storage/Repository (lokalt filsystem + Git)**: Lagring/versjonering av kunnskapsbank og forslag.
 - **Document sources**: PDF/Office/e-post/tekst (input).
 
 ## Use cases
@@ -19,4 +19,4 @@
 - **Read knowledge (HTML)**: Ansatte leser generert HTML.
 
 ## MVP-tolkning
-For bachelor-MVP kan alle use cases kjøres via **CLI** (ingen web-UI). "Login" kan erstattes av lokal policy + Git/Azure tilgang.
+For bachelor-MVP kan alle use cases kjøres via **CLI** (ingen web-UI). "Login" kan erstattes av lokal policy + Git-tilganger.

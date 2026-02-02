@@ -19,7 +19,8 @@ def write_json(model: BaseModel, path: Path) -> None:
 
 
 def read_json(model_type: type[T], path: Path) -> T:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    # Accept UTF-8 with or without BOM (Windows tools may emit BOM).
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     return model_type.model_validate(data)
 
 

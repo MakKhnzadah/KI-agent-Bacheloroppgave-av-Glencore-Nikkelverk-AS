@@ -13,7 +13,7 @@
 - **NFR2 Reproduserbarhet**: Pipeline skal kunne kjøres på nytt og gi samme resultat gitt samme input.
 - **NFR3 Versjonering**: Endringer lagres via Git (eller tilsvarende), slik at man kan se historikk og rulle tilbake.
 - **NFR4 Tilgang**: Skrive = ekspertbrukere. Lese = alle ansatte. (For MVP kan dette være rollebasert policy i dokumentasjon.)
-- **NFR5 Sikkerhet**: Ingen hemmelige nøkler i repo; bruk `.env`/Key Vault ved Azure.
+- **NFR5 Sikkerhet**: Ingen hemmelige nøkler i repo; bruk `.env` lokalt (og evt. interne secrets-rutiner ved behov).
 
 ## Leveranser
 1. **KI-agent (MVP)** som implementerer flyten: upload → parse/normaliser → forslag → godkjenning → lagring.

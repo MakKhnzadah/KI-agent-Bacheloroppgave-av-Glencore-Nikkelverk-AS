@@ -4,12 +4,16 @@ __pycache__/
 *.pyc
 
 # Generated / local data
-/data/uploads/
-/data/suggestions/
-/data/normalized/
+/databases/data/uploads/
+/databases/data/suggestions/
+/databases/data/normalized/
+/databases/data/reviews/
 
 # Generated site output
-/knowledge_base/html/
+/databases/knowledge_base/html/
+
+# Optional local vector DB
+/databases/vectorstore/
 
 # OS / IDE
 .vscode/

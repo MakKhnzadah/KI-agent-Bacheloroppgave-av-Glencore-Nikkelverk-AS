@@ -1,20 +1,6 @@
-.env
-.venv/
+# Python
 __pycache__/
 *.pyc
 
-# Generated / local data
-/databases/data/uploads/
-/databases/data/suggestions/
-/databases/data/normalized/
-/databases/data/reviews/
-
-# Generated site output
-/databases/knowledge_base/html/
-
-# Optional local vector DB
-/databases/vectorstore/
-
-# OS / IDE
-.vscode/
-.DS_Store
+# Env variables
+.env

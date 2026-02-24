@@ -1,0 +1,45 @@
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+
+actor "Expert User" as Expert
+actor "Employee" as Employee
+actor "Language Model Service\n(Microsoft / OpenAI)" as LLM
+actor "Storage / Repository\n(Local / Git)" as Storage
+actor "Document Sources\n(PDF / Email / Text)" as Docs
+
+rectangle "AI Agent + Process Knowledge Base" {
+
+  usecase "Reject Suggestions" as UC_Reject
+  usecase "Login" as UC_Login
+  usecase "Review Suggestions" as UC_Review
+  usecase "Approve Changes" as UC_Approve
+  usecase "Parse & Normalize" as UC_Parse
+  usecase "Generate Update Suggestions" as UC_Generate
+  usecase "Save Updates" as UC_Save
+  usecase "Upload Documents" as UC_Upload
+  usecase "Read Knowledge\n(HTML)" as UC_Read
+
+}
+
+' Expert user interactions
+Expert --> UC_Upload
+Expert --> UC_Review
+Expert --> UC_Approve
+Expert --> UC_Parse
+Expert --> UC_Generate
+Expert --> UC_Save
+Expert --> UC_Read
+
+' Employee interactions
+Employee --> UC_Read
+
+' External systems
+LLM --> UC_Generate
+Storage --> UC_Save
+Docs --> UC_Upload
+
+' Relationships
+UC_Review ..> UC_Login : <<include>>
+UC_Reject ..> UC_Review : <<extend>>
+@enduml

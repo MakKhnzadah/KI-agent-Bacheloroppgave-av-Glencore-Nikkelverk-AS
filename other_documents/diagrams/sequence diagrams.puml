@@ -1,0 +1,205 @@
+@startuml
+' Sequence Diagrams — AI Agent + Process Knowledge Base
+
+skinparam style strictuml
+skinparam shadowing false
+
+title Seq 1: Read Knowledge (HTML)
+
+actor Employee
+participant HtmlKnowledgeBase
+participant "Storage / Repository\n(Local / Git)" as Storage
+
+Employee -> HtmlKnowledgeBase : read(page)
+activate HtmlKnowledgeBase
+HtmlKnowledgeBase -> Storage : readHtml(page)
+activate Storage
+Storage --> HtmlKnowledgeBase : htmlContent
+deactivate Storage
+HtmlKnowledgeBase --> Employee : htmlContent
+deactivate HtmlKnowledgeBase
+
+note right of Employee
+Expert User follows the same flow
+end note
+
+
+
+newpage
+
+title Seq 2: Review Suggestions (includes Login)
+
+actor "Expert User" as ExpertUser
+participant AuthService
+participant ReviewService
+participant Session
+
+ExpertUser -> AuthService : login(username, password)
+activate AuthService
+AuthService --> ExpertUser : Session
+deactivate AuthService
+
+ExpertUser -> ReviewService : review(session, suggestions)
+activate ReviewService
+ReviewService -> Session : validate()
+activate Session
+Session --> ReviewService : valid
+deactivate Session
+
+loop for each Suggestion
+	alt Approve
+		ExpertUser -> ReviewService : approve(session, suggestionId)
+		ReviewService --> ExpertUser : ReviewedSuggestion(decision=APPROVED)
+	else Reject
+		ExpertUser -> ReviewService : reject(session, suggestionId, reason)
+		ReviewService --> ExpertUser : ReviewedSuggestion(decision=REJECTED)
+	end
+end
+
+ReviewService --> ExpertUser : list<ReviewedSuggestion>
+deactivate ReviewService
+
+note right of ReviewService
+Login is included in Review Suggestions
+Approve/Reject are decisions during review
+end note
+
+
+
+
+
+newpage
+
+title Seq 3: Upload Documents
+
+actor "Expert User" as ExpertUser
+participant UploadService
+participant "Document Sources\n(PDF / Email / Text)" as Docs
+participant Document
+
+ExpertUser -> UploadService : upload(source)
+activate UploadService
+UploadService -> Docs : readSelectedDocuments(source)
+activate Docs
+Docs --> UploadService : rawFiles/streams
+deactivate Docs
+
+loop for each file
+	create Document
+	UploadService -> Document : <<create>>
+	UploadService -> Document : set(id, sourceName, content)
+end
+
+UploadService --> ExpertUser : list<Document>
+deactivate UploadService
+
+
+
+
+newpage
+
+title Seq 4: Parse & Normalize
+
+actor "Expert User" as ExpertUser
+participant ParseNormalizeService
+participant Document
+participant NormalizedDocument
+
+ExpertUser -> ParseNormalizeService : parseAndNormalize(docs)
+activate ParseNormalizeService
+
+loop for each Document in docs
+	ParseNormalizeService -> Document : get(content, sourceName)
+	create NormalizedDocument
+	ParseNormalizeService -> NormalizedDocument : <<create>>
+	ParseNormalizeService -> NormalizedDocument : set(id, normalizedText)
+	ParseNormalizeService -> NormalizedDocument : link derivedFrom(Document)
+end
+
+ParseNormalizeService --> ExpertUser : list<NormalizedDocument>
+deactivate ParseNormalizeService
+
+
+
+
+
+newpage
+
+title Seq 5: Generate Update Suggestions (LLM)
+
+actor "Expert User" as ExpertUser
+participant SuggestionGenerator
+participant "Language Model Service\n(Microsoft / OpenAI)" as LLM
+participant NormalizedDocument
+participant Suggestion
+
+ExpertUser -> SuggestionGenerator : generate(normalized)
+activate SuggestionGenerator
+
+SuggestionGenerator -> NormalizedDocument : read(normalizedText)
+
+SuggestionGenerator -> LLM : prompt(normalizedText + KB context)
+activate LLM
+LLM --> SuggestionGenerator : suggestionDrafts
+deactivate LLM
+
+loop for each suggestion draft
+	create Suggestion
+	SuggestionGenerator -> Suggestion : <<create>>
+	SuggestionGenerator -> Suggestion : set(id, changeSummary)
+end
+
+SuggestionGenerator --> ExpertUser : list<Suggestion>
+deactivate SuggestionGenerator
+
+note right of LLM
+Can be local Ollama (Llama 3) or external API
+end note
+
+
+
+
+newpage
+
+title Seq 6: Save Updates to Repository
+
+actor "Expert User" as ExpertUser
+participant SaveUpdateService
+participant Session
+participant ReviewedSuggestion
+participant "Storage / Repository\n(Local / Git)" as Storage
+participant UpdatePackage
+
+ExpertUser -> SaveUpdateService : save(session, reviewed)
+activate SaveUpdateService
+
+SaveUpdateService -> Session : validate()
+activate Session
+Session --> SaveUpdateService : valid
+deactivate Session
+
+loop for each ReviewedSuggestion
+	SaveUpdateService -> ReviewedSuggestion : get(decision, suggestionId)
+	alt APPROVED
+		SaveUpdateService -> Storage : writeKnowledgeUpdate(reviewedSuggestion)
+		activate Storage
+		Storage --> SaveUpdateService : ok
+		deactivate Storage
+	else REJECTED
+		note right of SaveUpdateService
+		Rejected suggestions are not applied
+		end note
+	end
+end
+
+create UpdatePackage
+SaveUpdateService -> UpdatePackage : <<create>>
+SaveUpdateService -> UpdatePackage : set(id, appliedAt)
+SaveUpdateService -> UpdatePackage : contains(reviewed)
+
+SaveUpdateService --> ExpertUser : UpdatePackage
+deactivate SaveUpdateService
+
+@enduml
+
+

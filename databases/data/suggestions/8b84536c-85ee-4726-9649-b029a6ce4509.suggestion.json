@@ -1,0 +1,16 @@
+{
+  "suggestion_id": "8b84536c-85ee-4726-9649-b029a6ce4509",
+  "created_at": "2026-02-02T13:15:36.349698",
+  "target_path": "databases/knowledge_base/raw/example-prosess.md",
+  "operation": "append_section",
+  "proposed_markdown": "## Utkast fra nye kilder\n\nDette er et MVP-utkast (heuristisk) basert på opplastede dokumenter.\n\n### Ekstrakt\n\n```\n﻿Dette er en testfil for KI-agent.\n\nTema: prosess, ventiler, vedlikehold.\n- Sjekk ventil A hver uke\n- Loggfør avvik\n```\n",
+  "rationale": "Heuristisk forslag (ingen LLM konfigurert).",
+  "citations": [
+    {
+      "source_name": "sample.normalized.txt",
+      "locator": null,
+      "quote": null
+    }
+  ],
+  "extra": {}
+}

@@ -1,2 +1,0 @@
-[console_scripts]
-ki-agent = app.main:app

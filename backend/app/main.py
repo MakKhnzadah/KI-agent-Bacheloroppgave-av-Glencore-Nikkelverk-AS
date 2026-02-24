@@ -1,10 +1,6 @@
 from fastapi import FastAPI
-
+from .routers import health, documents
 app = FastAPI()
-@app.get("/health")
-def read_health():
-    return {"status": "ok"}
 
-@app.get("/kunskapsbank")
-def read_kunskapsbank():
-    return {"message": "Ermin tester kunskapsbank endpoint, ikke noe å tenke på her enda"}
+app.include_router(health.router)
+app.include_router(documents.router)

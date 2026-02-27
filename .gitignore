@@ -4,3 +4,11 @@ __pycache__/
 
 # Env variables
 .env
+
+# Generated artifacts / local data (do not commit)
+databases/data/
+databases/knowledge_base/html/
+databases/vector_store/
+
+# Optional local-only files
+*.qea

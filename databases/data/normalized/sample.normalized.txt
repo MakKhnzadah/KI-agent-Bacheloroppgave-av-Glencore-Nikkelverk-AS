@@ -1,5 +1,0 @@
-﻿Dette er en testfil for KI-agent.
-
-Tema: prosess, ventiler, vedlikehold.
-- Sjekk ventil A hver uke
-- Loggfør avvik

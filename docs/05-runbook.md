@@ -11,6 +11,29 @@
 - `ki-agent apply`
 - `ki-agent build-html`
 
+## 3) Vector DB (lokal Chroma + Ollama embeddings)
+
+### Forutsetninger
+- Installer og start Ollama
+- Last ned embedding-modell (default): `ollama pull nomic-embed-text`
+
+Miljøvariabler (valgfritt):
+- `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
+- `OLLAMA_EMBED_MODEL` (default: `nomic-embed-text`)
+- `VECTOR_STORE_DIR` (default: `databases/vector_store/chroma`)
+
+### Indekser kunnskapsbanken
+Kunnskapsbankens kilde (source-of-truth) ligger i `databases/knowledge_base/raw/`.
+
+Start API:
+- `uvicorn app.main:app --reload --app-dir backend`
+
+Indekser:
+- `POST http://127.0.0.1:8000/vector/index/kb`
+
+Søk:
+- `GET  http://127.0.0.1:8000/vector/search?q=<sp%C3%B8rsm%C3%A5l>&k=5`
+
 ## Output
 - Rå kunnskap: `databases/knowledge_base/raw`
 - Generert HTML: `databases/knowledge_base/html`

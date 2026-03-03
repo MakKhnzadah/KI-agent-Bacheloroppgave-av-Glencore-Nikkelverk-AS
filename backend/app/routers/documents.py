@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File
 from app.document_processing.document_parsing import parse_document
 from app.ai_services.agent_service import AgentService
 from app.ai_services.ollama_provider import OllamaProvider
+from app.agents.structuring_agents import STRUCTURING_AGENT_PROMPT
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -14,13 +15,7 @@ async def upload_document(file: UploadFile = File(...)):
 
     processed_text = parse_document(file.filename, content)
 
-    system_prompt = """
-You are a knowledge base assistant.
-Analyze the document and suggest structured updates
-in Markdown with YAML metadata.
-"""
-
-    suggestions = agent.process_document(system_prompt, processed_text)
+    suggestions = agent.process_document(STRUCTURING_AGENT_PROMPT, processed_text)
 
     return {
         "suggestions": suggestions,

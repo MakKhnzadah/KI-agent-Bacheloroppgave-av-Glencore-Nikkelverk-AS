@@ -4,6 +4,7 @@ __pycache__/
 
 # Env variables
 .env
+venv/
 
 # Generated artifacts / local data (do not commit)
 databases/data/

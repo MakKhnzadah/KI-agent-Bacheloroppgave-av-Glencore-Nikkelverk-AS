@@ -1,0 +1,133 @@
+@startuml
+' AI Agent + Process Knowledge Base — class diagram aligned with updated use-cases
+
+skinparam style strictuml
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+
+hide circle
+hide empty members
+
+' People (from use-case diagram; no generic User class)
+class "Expert User" as ExpertUser <<actor>>
+class Employee <<actor>>
+
+' Login/auth (Review Suggestions includes Login)
+class AuthService {
+  +login(username: str, password: str): Session
+}
+class Session {
+  +principalId: str
+  +expiresAt: datetime
+}
+AuthService ..> Session : creates
+
+' Documents: upload + parse/normalize
+class Document {
+  +id: str
+  +sourceName: str
+  +content: str
+}
+class NormalizedDocument {
+  +id: str
+  +normalizedText: str
+}
+
+class UploadService {
+  +upload(source: DocumentSource): list<Document>
+}
+class ParseNormalizeService {
+  +parseAndNormalize(docs: list<Document>): list<NormalizedDocument>
+}
+
+' Suggestions + review/approve/reject
+class Suggestion {
+  +id: str
+  +changeSummary: str
+}
+class ReviewedSuggestion {
+  +suggestionId: str
+  +decision: ReviewDecision
+  +comment: str
+}
+enum ReviewDecision {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+class SuggestionGenerator {
+  +generate(normalized: list<NormalizedDocument>): list<Suggestion>
+}
+class ReviewService {
+  +review(session: Session, suggestions: list<Suggestion>): list<ReviewedSuggestion>
+  +approve(session: Session, suggestionId: str): ReviewedSuggestion
+  +reject(session: Session, suggestionId: str, reason: str): ReviewedSuggestion
+}
+
+ReviewedSuggestion "1" o-- "1" Suggestion
+
+ReviewService ..> AuthService : <<include>> Login
+ReviewService ..> Session : validates
+
+' Save updates + read knowledge
+class UpdatePackage {
+  +id: str
+  +appliedAt: datetime
+}
+class SaveUpdateService {
+  +save(session: Session, reviewed: list<ReviewedSuggestion>): UpdatePackage
+}
+
+class HtmlKnowledgeBase {
+  +read(page: str): str
+}
+
+' External systems (from updated use-case diagram)
+interface DocumentSource <<external>>
+class "Document Sources\n(PDF / Email / Text)" as Docs <<external>>
+Docs ..|> DocumentSource
+
+interface LlmService <<external>>
+class "Language Model Service\n(Microsoft / OpenAI)" as LLM <<external>>
+LLM ..|> LlmService
+
+interface Repository <<external>>
+class "Storage / Repository\n(Local / Git)" as Storage <<external>>
+Storage ..|> Repository
+
+' Dependencies
+UploadService ..> DocumentSource : reads
+UploadService "1" --> "0..*" Document : creates
+
+ParseNormalizeService "1" --> "0..*" Document : parses
+ParseNormalizeService "1" --> "0..*" NormalizedDocument : creates
+NormalizedDocument "1" --> "1" Document : derivedFrom
+
+SuggestionGenerator ..> LlmService : prompts
+SuggestionGenerator "1" --> "0..*" NormalizedDocument : reads
+SuggestionGenerator "1" --> "0..*" Suggestion : creates
+
+ReviewService "1" --> "0..*" Suggestion : reviews
+ReviewService "1" --> "0..*" ReviewedSuggestion : creates
+
+SaveUpdateService "1" --> "0..*" ReviewedSuggestion : applies
+SaveUpdateService "1" --> "1" UpdatePackage : creates
+UpdatePackage "1" o-- "0..*" ReviewedSuggestion : contains
+
+SaveUpdateService ..> Repository : writes updates
+HtmlKnowledgeBase ..> Repository : reads HTML
+
+' Actor interactions (aligns with use-case diagram)
+ExpertUser ..> AuthService : Login
+ExpertUser ..> UploadService : Upload Documents
+ExpertUser ..> ParseNormalizeService : Parse & Normalize
+ExpertUser ..> SuggestionGenerator : Generate Suggestions
+ExpertUser ..> ReviewService : Review/Approve/Reject
+ExpertUser ..> SaveUpdateService : Save Updates
+ExpertUser ..> HtmlKnowledgeBase : Read Knowledge
+
+Employee ..> HtmlKnowledgeBase : Read Knowledge
+
+@enduml

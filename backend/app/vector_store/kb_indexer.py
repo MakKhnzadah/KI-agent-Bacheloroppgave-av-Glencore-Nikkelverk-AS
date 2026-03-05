@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
+from yaml import YAMLError
 
 from .chroma_store import ChromaVectorStore
 from .config import _repo_root_from_here
@@ -30,9 +31,14 @@ def _load_markdown_with_front_matter(path: Path) -> Tuple[Dict[str, Any], str]:
         parts = content.split("---\n", 2)
         # parts: ["", frontmatter, rest]
         if len(parts) == 3:
-            front = yaml.safe_load(parts[1]) or {}
+            try:
+                front = yaml.safe_load(parts[1]) or {}
+            except YAMLError:
+                front = {}
             body = parts[2].lstrip("\n")
-            return dict(front), body
+            if isinstance(front, dict):
+                return dict(front), body
+            return {}, body
 
     return {}, content
 

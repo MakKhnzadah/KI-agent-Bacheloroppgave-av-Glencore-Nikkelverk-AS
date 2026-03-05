@@ -155,3 +155,15 @@ Denne repoen er scaffoldet for en CLI-basert MVP som følger use-case flyten:
 
 Se også `docs/` for krav, use cases og datamodell.
 
+---
+
+## 🗓️ Hva vi gjorde i dag (2026-03-05)
+
+- Valgte SQLite som eneste workflow-database (lokalt), for å lagre historikk og beslutninger i MVP-en.
+- La til arbeidsflyt for dokumentforslag: upload → agent-forslag → review (approve/reject) → apply til kunnskapsbanken.
+- Opplasting lagrer både fil på disk og metadata/normalisert tekst/forslag i workflow-DB.
+- Implementerte API-endepunkter for å hente forslag, godkjenne/avvise, og anvende godkjente forslag (skriver Markdown + YAML til `databases/knowledge_base/raw/`).
+- Oppdaterte runbook med workflow-DB og API-eksempler.
+
+Hvordan kjøre backend/API er beskrevet i `backend/README.md`.
+

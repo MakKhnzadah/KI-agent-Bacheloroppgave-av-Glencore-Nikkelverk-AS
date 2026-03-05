@@ -34,6 +34,65 @@ Indekser:
 Søk:
 - `GET  http://127.0.0.1:8000/vector/search?q=<sp%C3%B8rsm%C3%A5l>&k=5`
 
+## 4) Workflow DB (SQLite) – forslag/review/historikk
+
+For å lagre arbeidsflyt-data for MVP-en (opplastinger, forslag, review og enkel historikk) bruker vi en lokal SQLite database.
+
+Miljøvariabler (valgfritt):
+- `WORKFLOW_DB_PATH` (default: `databases/workflow/workflow.sqlite3`)
+
+Tabeller (foreløpig):
+- `uploads`
+- `normalized_documents`
+- `suggestions`
+- `reviews`
+- `applied_changes`
+
+Databasen blir automatisk initialisert når API-et starter.
+
+### Endepunkter (workflow)
+
+Hent forslag:
+- `GET  http://127.0.0.1:8000/workflow/suggestions/<suggestion_id>`
+
+Godkjenn/avvis forslag:
+- `POST http://127.0.0.1:8000/workflow/suggestions/<suggestion_id>/review`
+
+Eksempel body:
+```json
+{
+	"decision": "approved",
+	"reviewer": "name",
+	"comment": "looks good"
+}
+```
+
+Bruk godkjent forslag og oppdater kunnskapsbanken (skriver en .md fil i `databases/knowledge_base/raw/`):
+- `POST http://127.0.0.1:8000/workflow/suggestions/<suggestion_id>/apply`
+
+Merk: Etter `apply` trigger API-et automatisk re-indeksering av kunnskapsbanken i Chroma (best-effort, kjøres i bakgrunnen).
+
+Responsen fra `apply` inkluderer også `reindex: "scheduled"` for å indikere at re-indeksering er lagt i kø.
+
+Valgfritt body (for å velge filnavn/sti):
+```json
+{
+	"kb_path": "procedures/pump-a.md",
+	"notes": "applied after review"
+}
+```
+
+### Review / godkjenning (API)
+
+Hent forslag:
+- `GET http://127.0.0.1:8000/workflow/suggestions/<suggestion_id>`
+
+Godkjenn/avvis forslag:
+- `POST http://127.0.0.1:8000/workflow/suggestions/<suggestion_id>/review`
+- Body (JSON):
+	- `{ "decision": "approved", "reviewer": "<navn>", "comment": "<valgfritt>" }`
+	- eller `{ "decision": "rejected", "reviewer": "<navn>", "comment": "<valgfritt>" }`
+
 ## Output
 - Rå kunnskap: `databases/knowledge_base/raw`
 - Generert HTML: `databases/knowledge_base/html`

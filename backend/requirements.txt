@@ -5,3 +5,4 @@ python-multipart==0.0.20
 chromadb==0.5.23
 PyYAML==6.0.2
 requests==2.32.3
+posthog==3.5.0

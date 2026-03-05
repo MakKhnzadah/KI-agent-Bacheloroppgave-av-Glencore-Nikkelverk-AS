@@ -11,5 +11,8 @@ databases/data/
 databases/knowledge_base/html/
 databases/vector_store/
 
+# SQLite (local only)
+*.sqlite3
+
 # Optional local-only files
 *.qea

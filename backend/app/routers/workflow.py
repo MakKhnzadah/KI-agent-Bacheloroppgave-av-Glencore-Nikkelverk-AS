@@ -167,6 +167,14 @@ class SuggestionResponse(BaseModel):
     created_at: str
 
 
+class SuggestionListItem(BaseModel):
+    suggestion_id: str
+    upload_id: str
+    status: str
+    created_at: str
+    original_filename: Optional[str] = None
+
+
 class ApplyRequest(BaseModel):
     kb_path: Optional[str] = Field(
         default=None,
@@ -181,6 +189,42 @@ class ApplyResponse(BaseModel):
     change_id: str
     status: Literal["applied"]
     reindex: Literal["scheduled"]
+
+
+@router.get("/suggestions", response_model=list[SuggestionListItem])
+def list_suggestions(limit: int = 50, offset: int = 0) -> list[SuggestionListItem]:
+    """List suggestions so you can copy `suggestion_id` for review/approve/reject."""
+
+    # Guardrails to keep responses reasonable.
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+    if offset < 0:
+        offset = 0
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.suggestion_id, s.upload_id, s.status, s.created_at, u.original_filename
+            FROM suggestions s
+            LEFT JOIN uploads u ON u.upload_id = s.upload_id
+            ORDER BY s.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+    return [
+        SuggestionListItem(
+            suggestion_id=row["suggestion_id"],
+            upload_id=row["upload_id"],
+            status=_external_status(row["status"]),
+            created_at=row["created_at"],
+            original_filename=row["original_filename"],
+        )
+        for row in rows
+    ]
 
 
 @router.get("/suggestions/{suggestion_id}", response_model=SuggestionResponse)

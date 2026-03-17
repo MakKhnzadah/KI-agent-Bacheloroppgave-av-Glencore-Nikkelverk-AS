@@ -1,15 +1,24 @@
 # Runbook (lokal MVP)
 
 ## 1) Installer
-- Opprett venv og installer: `pip install -e .`
-- Kopier `.env.example` til `.env` og fyll inn API-nøkler.
+- Opprett venv (fra repo root):
+	- `python -m venv .venv`
+	- `. .\.venv\Scripts\Activate.ps1`
+- Installer dependencies:
+	- `pip install -r backend\requirements.txt`
+- Kopier `.env.example` til `.env` og fyll inn API-nøkler (valgfritt for lokal Ollama).
 
 ## 2) Kjør pipeline
-- `ki-agent ingest databases/data/uploads`
-- `ki-agent suggest`
-- `ki-agent review`
-- `ki-agent apply`
-- `ki-agent build-html`
+- Start API:
+	- `uvicorn app.main:app --reload --app-dir backend`
+- Åpne Swagger UI:
+	- `http://127.0.0.1:8000/docs`
+- Kjør use-case flyten via endepunkter:
+	- `POST /documents/upload`
+	- `GET /workflow/suggestions` (finn `suggestion_id`)
+	- `POST /workflow/suggestions/{suggestion_id}/review`
+	- `POST /workflow/suggestions/{suggestion_id}/apply`
+	- `POST /kb/build-html`
 
 ## 3) Vector DB (lokal Chroma + Ollama embeddings)
 

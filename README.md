@@ -128,30 +128,33 @@ Utvikling av chatbot eller brukergrensesnitt for søk er **ikke** del av oppgave
 
 ## 🚀 Quickstart (lokal MVP)
 
-Denne repoen er scaffoldet for en CLI-basert MVP som følger use-case flyten:
+Denne repoen er scaffoldet for en API-basert MVP (FastAPI) som følger use-case flyten:
 **upload → parse/normaliser → forslag → review/approve/reject → lagring → HTML**.
 
 ### Struktur
-- `backend/`: Python backend/CLI
+- `backend/`: Python backend (FastAPI)
 - `databases/knowledge_base/raw/`: Kunnskapsbank i Markdown + YAML front matter
 - `databases/knowledge_base/html/`: Generert HTML (bygges av script)
 - `databases/data/uploads/`: Opplastede kilder (lokalt)
 - `databases/data/normalized/`: Normaliserte mellomfiler (lokalt)
-- `databases/data/suggestions/`: Forslag som JSON (lokalt)
-- `databases/data/reviews/`: Godkjenning/avvisning som JSON (lokalt)
+- `databases/data/suggestions/`: Forslag/utkast fra agent (lokalt)
 
 ### Kjøring
 1. Kopier `.env.example` → `.env` (API-nøkler kan fylles inn senere)
 2. Installer (PowerShell):
-  - `./backend/scripts/dev.ps1 install`
-3. Legg inn `.txt`/`.md` i `databases/data/uploads/` eller en valgfri mappe
-4. Kjør pipeline:
-  - `ki-agent ingest databases/data/uploads`
-  - `ki-agent normalize`
-  - `ki-agent suggest`
-  - `ki-agent review`
-  - `ki-agent apply`
-  - `ki-agent build-html`
+  - `python -m venv .venv`
+  - `. .\.venv\Scripts\Activate.ps1`
+  - `pip install -r backend\requirements.txt`
+3. Legg inn `.txt`/`.pdf`/`.docx`/`.eml` i `databases/data/uploads/` eller en valgfri mappe
+4. Start API (fra repo root):
+  - `uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload`
+5. Kjør pipeline via API (Swagger):
+  - Åpne `http://127.0.0.1:8000/docs`
+  - Last opp dokument: `POST /documents/upload`
+  - List forslag: `GET /workflow/suggestions`
+  - Godkjenn/avvis: `POST /workflow/suggestions/{suggestion_id}/review`
+  - Apply til kunnskapsbanken: `POST /workflow/suggestions/{suggestion_id}/apply`
+  - Bygg HTML: `POST /kb/build-html`
 
 Se også `docs/` for krav, use cases og datamodell.
 

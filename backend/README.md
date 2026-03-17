@@ -17,6 +17,11 @@ From repo root:
 pip install -r backend\requirements.txt
 ```
 
+If you created your venv inside `backend\venv` and are running commands from the `backend` folder:
+```powershell
+python -m pip install -r requirements.txt
+```
+
 ### 3) Start the API
 From repo root:
 ```powershell

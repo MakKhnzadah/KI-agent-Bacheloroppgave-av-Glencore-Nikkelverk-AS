@@ -8,6 +8,8 @@ STRICT OUTPUT FORMAT RULES:
 2. The YAML section MUST contain:
    - title
    - tags (list)
+   - updated_at (ISO date string or empty)
+   - source (string or empty)
    - review_status (set to "pending")
    - confidence_score (0.0 - 1.0)
 3. The YAML must end with:

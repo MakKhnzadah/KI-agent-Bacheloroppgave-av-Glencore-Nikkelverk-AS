@@ -16,3 +16,10 @@ databases/vector_store/
 
 # Optional local-only files
 *.qea
+
+node_modules/
+dist/
+.vite/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

@@ -1,0 +1,75 @@
+@startuml
+' Workflow — AI Agent + Process Knowledge Base (MVP)
+' Covers: upload → suggest → review → apply → reindex → search
+
+skinparam style strictuml
+skinparam shadowing false
+
+title Project Workflow (MVP)
+
+start
+
+partition "Expert User" {
+  :Select document (PDF/TXT);
+  :POST /documents/upload;
+}
+
+partition "FastAPI API" {
+  :Store raw upload on disk;
+  :Parse & normalize text;
+}
+
+partition "Ollama LLM" {
+  :Generate KB draft\n(YAML front matter + Markdown);
+}
+
+partition "SQLite Workflow DB" {
+  :Persist upload metadata;
+  :Persist normalized text;
+  :Persist suggestion (status=draft);
+}
+
+partition "Expert User" {
+  :GET /workflow/suggestions/{id};
+  if (Approve?) then (yes)
+    :POST /workflow/suggestions/{id}/review\n{decision=approved};
+  else (no)
+    :POST /workflow/suggestions/{id}/review\n{decision=rejected};
+    stop
+  endif
+}
+
+partition "FastAPI API" {
+  :POST /workflow/suggestions/{id}/apply;
+  :Validate status == approved;
+}
+
+partition "Raw KB (Markdown + YAML)" {
+  :Write .md to\ndatabases/knowledge_base/raw/;
+}
+
+partition "SQLite Workflow DB" {
+  :Insert applied_changes audit row;
+  :Update suggestion status=applied;
+}
+
+partition "KB Indexer (Background Task)" {
+  :Re-index KB files;
+}
+
+partition "Ollama Embeddings" {
+  :Embed chunk texts;
+}
+
+partition "Chroma Vector Store" {
+  :Reset collection;
+  :Upsert chunks + metadata;
+}
+
+partition "Employee / Expert User" {
+  :GET /vector/search?q=...;
+  :Receive relevant KB chunks;
+}
+
+stop
+@enduml

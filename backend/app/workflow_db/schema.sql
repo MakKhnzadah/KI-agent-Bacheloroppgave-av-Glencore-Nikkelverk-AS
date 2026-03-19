@@ -39,6 +39,30 @@ CREATE TABLE IF NOT EXISTS document_audits (
   FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'expert' CHECK (role IN ('admin','reviewer','user','expert')),
+  is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  access_token_hash TEXT NOT NULL UNIQUE,
+  refresh_token_hash TEXT NOT NULL UNIQUE,
+  access_expires_at TEXT NOT NULL,
+  refresh_expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_refreshed_at TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS uploads (
   upload_id TEXT PRIMARY KEY,
   original_filename TEXT NOT NULL,
@@ -94,5 +118,10 @@ CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_category ON documents(category);
 CREATE INDEX IF NOT EXISTS idx_activities_document_id ON activities(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_audits_document_id ON document_audits(document_id);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_access_token_hash ON auth_sessions(access_token_hash);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_refresh_token_hash ON auth_sessions(refresh_token_hash);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_revoked_at ON auth_sessions(revoked_at);
 CREATE INDEX IF NOT EXISTS idx_suggestions_upload_id ON suggestions(upload_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_suggestion_id ON reviews(suggestion_id);

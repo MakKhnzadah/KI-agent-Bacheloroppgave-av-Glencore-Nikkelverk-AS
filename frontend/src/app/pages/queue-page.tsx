@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Sidebar } from "@/app/components/sidebar";
 import { MessageSquare, FileText, Clock, ChevronRight, X, Send, XCircle, Trash2 } from "lucide-react";
 import { useDocuments } from "@/app/context/documents-context";
+import { useToast } from "@/app/context/toast-context";
+import { getAuthPermissionErrorMessage } from "@/utils/auth-errors";
 
 interface ChatMessage {
   role: "user" | "ai";
@@ -10,6 +12,7 @@ interface ChatMessage {
 
 export function QueuePage() {
   const { getPendingDocuments, getRejectedDocuments, approveDocument, rejectDocument, deleteDocument } = useDocuments();
+  const { showToast } = useToast();
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState("");
@@ -34,13 +37,13 @@ export function QueuePage() {
     if (selectedDocId) {
       try {
         await approveDocument(selectedDocId);
-        alert("✅ Dokument godkjent!\n\nAI-revidert versjon er lagret i kunnskapsbanken.");
+        showToast("Dokument godkjent. AI-revidert versjon er lagret i kunnskapsbanken.", "success");
         setSelectedDocId(null);
         setChatMessages([]);
         setRevisedContent("");
       } catch (error) {
         console.error("Failed to approve document:", error);
-        alert("Feil ved godkjenning av dokument. Prøv igjen.");
+        showToast(`Feil ved godkjenning av dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
       }
     }
   };
@@ -49,13 +52,13 @@ export function QueuePage() {
     if (selectedDocId) {
       try {
         await rejectDocument(selectedDocId);
-        alert("❌ Dokument avvist!\n\nDokumentet er ikke publisert i kunnskapsbanken.");
+        showToast("Dokument avvist. Dokumentet er ikke publisert i kunnskapsbanken.", "success");
         setSelectedDocId(null);
         setChatMessages([]);
         setRevisedContent("");
       } catch (error) {
         console.error("Failed to reject document:", error);
-        alert("Feil ved avvisning av dokument. Prøv igjen.");
+        showToast(`Feil ved avvisning av dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
       }
     }
   };
@@ -66,12 +69,17 @@ export function QueuePage() {
     setRevisedContent("");
   };
 
-  const handleDeleteRejected = (docId: string) => {
+  const handleDeleteRejected = async (docId: string) => {
     const doc = rejectedDocuments.find(d => d.id === docId);
     if (window.confirm(`Er du sikker på at du vil slette "${doc?.title}"?\n\nDenne handlingen kan ikke angres.`)) {
-      deleteDocument(docId);
-      setViewRejectedDoc(null);
-      alert("🗑️ Dokument slettet!\n\nDokumentet er permanent fjernet fra systemet.");
+      try {
+        await deleteDocument(docId);
+        setViewRejectedDoc(null);
+        showToast("Dokument slettet. Dokumentet er permanent fjernet fra systemet.", "success");
+      } catch (error) {
+        console.error("Failed to delete document:", error);
+        showToast(`Feil ved sletting av dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
+      }
     }
   };
 

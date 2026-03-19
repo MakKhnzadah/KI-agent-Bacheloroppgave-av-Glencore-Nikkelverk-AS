@@ -4,42 +4,51 @@ skinparam packageStyle rectangle
 
 actor "Expert User" as Expert
 actor "Employee" as Employee
-actor "Language Model Service\n(Microsoft / OpenAI)" as LLM
-actor "Storage / Repository\n(Local / Git)" as Storage
+actor "Ollama LLM" as LLM
+actor "Ollama Embeddings" as Embed
+actor "Raw KB (Markdown + YAML)\n(Local / Git)" as Storage
+actor "Chroma Vector Store" as Chroma
 actor "Document Sources\n(PDF / Email / Text)" as Docs
 
 rectangle "AI Agent + Process Knowledge Base" {
 
-  usecase "Reject Suggestions" as UC_Reject
-  usecase "Login" as UC_Login
-  usecase "Review Suggestions" as UC_Review
-  usecase "Approve Changes" as UC_Approve
-  usecase "Parse & Normalize" as UC_Parse
-  usecase "Generate Update Suggestions" as UC_Generate
-  usecase "Save Updates" as UC_Save
   usecase "Upload Documents" as UC_Upload
-  usecase "Read Knowledge\n(HTML)" as UC_Read
+  usecase "Parse & Normalize" as UC_Parse
+  usecase "Generate KB Draft Suggestion" as UC_Generate
+  usecase "Review Suggestion" as UC_Review
+  usecase "Approve Suggestion" as UC_Approve
+  usecase "Reject Suggestion" as UC_Reject
+  usecase "Apply Approved Suggestion\n(Write KB Markdown)" as UC_Apply
+  usecase "Index Knowledge Base" as UC_Index
+  usecase "Search Knowledge\n(Vector Search)" as UC_Search
 
 }
 
 ' Expert user interactions
 Expert --> UC_Upload
-Expert --> UC_Review
-Expert --> UC_Approve
 Expert --> UC_Parse
 Expert --> UC_Generate
-Expert --> UC_Save
-Expert --> UC_Read
+Expert --> UC_Review
+Expert --> UC_Approve
+Expert --> UC_Reject
+Expert --> UC_Apply
+Expert --> UC_Search
 
 ' Employee interactions
-Employee --> UC_Read
+Employee --> UC_Search
 
 ' External systems
-LLM --> UC_Generate
-Storage --> UC_Save
 Docs --> UC_Upload
+LLM --> UC_Generate
+Storage --> UC_Apply
+Storage --> UC_Index
+Embed --> UC_Search
+Embed --> UC_Index
+Chroma --> UC_Search
+Chroma --> UC_Index
 
 ' Relationships
-UC_Review ..> UC_Login : <<include>>
-UC_Reject ..> UC_Review : <<extend>>
+UC_Review ..> UC_Approve : <<include>>
+UC_Review ..> UC_Reject : <<include>>
+UC_Apply ..> UC_Index : <<include>>
 @enduml

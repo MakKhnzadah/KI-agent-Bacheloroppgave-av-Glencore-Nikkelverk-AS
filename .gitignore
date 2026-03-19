@@ -16,3 +16,13 @@ databases/vector_store/
 
 # Optional local-only files
 *.qea
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Frontend caches and test artifacts
+frontend/coverage/
+frontend/.nyc_output/
+frontend/.eslintcache

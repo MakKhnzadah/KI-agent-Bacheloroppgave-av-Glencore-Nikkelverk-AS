@@ -1,11 +1,19 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from .routers import api_documents, documents, health, vector_search, workflow
+from .routers import api_activities, api_auth, api_documents, documents, health, vector_search, workflow
 from .workflow_db.db import init_db
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+	init_db()
+	yield
+
+app = FastAPI(lifespan=lifespan)
 
 
 def _error_response(status_code: int, code: str, message: str, details: dict | None = None) -> JSONResponse:
@@ -49,13 +57,10 @@ async def _validation_exception_handler(_: Request, exc: RequestValidationError)
 		details={"issues": exc.errors()},
 	)
 
-
-@app.on_event("startup")
-def _startup() -> None:
-	init_db()
-
 app.include_router(health.router)
 app.include_router(documents.router)
 app.include_router(api_documents.router)
+app.include_router(api_activities.router)
+app.include_router(api_auth.router)
 app.include_router(vector_search.router)
 app.include_router(workflow.router)

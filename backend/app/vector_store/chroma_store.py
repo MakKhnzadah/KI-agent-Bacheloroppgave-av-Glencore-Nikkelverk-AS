@@ -17,6 +17,20 @@ class ChromaVectorStore:
         self._client = chromadb.PersistentClient(path=str(self.persist_dir))
         self._collection = self._client.get_or_create_collection(name=self.collection_name)
 
+    def reset_collection(self) -> None:
+        """Delete and recreate the collection.
+
+        Useful for a full rebuild when the underlying KB documents change and
+        old embeddings must be removed.
+        """
+
+        try:
+            self._client.delete_collection(name=self.collection_name)
+        except Exception:
+            # Collection may not exist yet; ignore.
+            pass
+        self._collection = self._client.get_or_create_collection(name=self.collection_name)
+
     def upsert(
         self,
         *,

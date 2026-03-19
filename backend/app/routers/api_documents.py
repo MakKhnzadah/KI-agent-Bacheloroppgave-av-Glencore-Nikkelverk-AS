@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from app.workflow_db.db import get_connection
@@ -67,6 +68,22 @@ class DocumentStatsOut(BaseModel):
     pending: int
     approved: int
     rejected: int
+
+
+class ActivityOut(BaseModel):
+    id: str
+    type: Literal[
+        "document_approved",
+        "document_uploaded",
+        "ai_suggestion",
+        "document_rejected",
+        "system_update",
+    ]
+    title: str
+    description: str
+    user: str
+    time: str
+    documentId: Optional[str] = None
 
 
 class DocumentDecisionRequest(BaseModel):
@@ -156,6 +173,77 @@ def _insert_audit(
         """,
         (str(uuid.uuid4()), document_id, action, from_status, to_status, performed_by, comment),
     )
+
+
+def _row_to_activity(row) -> ActivityOut:
+    return ActivityOut(
+        id=row["id"],
+        type=row["type"],
+        title=row["title"],
+        description=row["description"],
+        user=row["user"],
+        time=row["time"],
+        documentId=row["document_id"],
+    )
+
+
+def _extract_bearer_token(authorization: Optional[str]) -> str:
+    if not authorization:
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Missing Authorization header")
+
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid Authorization header")
+
+    return parts[1].strip()
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _require_expert_user(authorization: Optional[str]) -> str:
+    token = _extract_bearer_token(authorization)
+    token_hash = _hash_token(token)
+    now = datetime.now(timezone.utc)
+
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT s.id, s.access_expires_at, u.username, u.role, u.is_active
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.access_token_hash = ?
+              AND s.revoked_at IS NULL
+            """,
+            (token_hash,),
+        ).fetchone()
+
+    if row is None:
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid token")
+
+    if int(row["is_active"] or 0) != 1:
+        raise _api_error(status.HTTP_403_FORBIDDEN, "FORBIDDEN", "User is inactive")
+
+    if _parse_iso(row["access_expires_at"]) <= now:
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Token expired")
+
+    if row["role"] != "expert":
+        raise _api_error(
+            status.HTTP_403_FORBIDDEN,
+            "FORBIDDEN",
+            "Insufficient role",
+            details={"requiredRole": "expert", "currentRole": row["role"]},
+        )
+
+    return row["username"]
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -252,6 +340,26 @@ def get_document(document_id: str) -> DocumentOut:
     return _row_to_document(row)
 
 
+@router.get("/{document_id}/activities", response_model=list[ActivityOut])
+def get_document_activities(document_id: str) -> list[ActivityOut]:
+    with get_connection() as conn:
+        existing = conn.execute("SELECT id FROM documents WHERE id = ?", (document_id,)).fetchone()
+        if existing is None:
+            raise _api_error(status.HTTP_404_NOT_FOUND, "NOT_FOUND", "Document not found")
+
+        rows = conn.execute(
+            """
+            SELECT id, type, title, description, user, time, document_id
+            FROM activities
+            WHERE document_id = ?
+            ORDER BY created_at DESC
+            """,
+            (document_id,),
+        ).fetchall()
+
+    return [_row_to_activity(row) for row in rows]
+
+
 @router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
 def create_document(payload: DocumentCreateRequest) -> DocumentOut:
     now = datetime.now()
@@ -336,8 +444,9 @@ def create_document(payload: DocumentCreateRequest) -> DocumentOut:
 def approve_document(
     document_id: str,
     payload: Optional[DocumentDecisionRequest] = Body(default=None),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> DocumentOut:
-    reviewer = (payload.reviewer if payload else None) or "System"
+    reviewer = _require_expert_user(authorization)
     comment = payload.comment if payload else None
 
     with get_connection() as conn:
@@ -404,8 +513,9 @@ def approve_document(
 def reject_document(
     document_id: str,
     payload: Optional[DocumentDecisionRequest] = Body(default=None),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> DocumentOut:
-    reviewer = (payload.reviewer if payload else None) or "System"
+    reviewer = _require_expert_user(authorization)
     comment = payload.comment if payload else None
 
     with get_connection() as conn:
@@ -469,7 +579,12 @@ def reject_document(
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: str) -> Response:
+def delete_document(
+    document_id: str,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Response:
+    _require_expert_user(authorization)
+
     with get_connection() as conn:
         deleted = conn.execute("DELETE FROM documents WHERE id = ?", (document_id,)).rowcount
 

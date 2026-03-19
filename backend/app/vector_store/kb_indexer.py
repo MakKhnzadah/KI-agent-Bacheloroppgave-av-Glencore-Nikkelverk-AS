@@ -92,6 +92,9 @@ def iter_kb_markdown_files(kb_raw_dir: Optional[Path] = None) -> Iterable[Path]:
     for path in root.rglob("*.md"):
         if path.name.startswith("_"):
             continue
+        # Exclude meta-documentation that tends to dominate search results.
+        if path.name.lower() == "readme.md":
+            continue
         yield path
 
 
@@ -116,6 +119,8 @@ def build_chunks_for_file(path: Path) -> List[Chunk]:
 
     chunks: List[Chunk] = []
     for idx, chunk_text in enumerate(body_chunks):
+        # Include document title in the embedded text to improve recall.
+        chunk_doc = f"# {title}\n\n{chunk_text}".strip()
         chunk_id = f"{doc_id}:{idx}"
         metadata: Dict[str, Any] = {
             "doc_id": doc_id,
@@ -125,7 +130,7 @@ def build_chunks_for_file(path: Path) -> List[Chunk]:
             "chunk_index": idx,
             "doc_hash": body_hash,
         }
-        chunks.append(Chunk(chunk_id=chunk_id, text=chunk_text, metadata=metadata))
+        chunks.append(Chunk(chunk_id=chunk_id, text=chunk_doc, metadata=metadata))
 
     return chunks
 
@@ -136,6 +141,9 @@ def index_kb(
     embedder: OllamaEmbeddingClient,
     kb_raw_dir: Optional[Path] = None,
 ) -> Dict[str, int]:
+    # Full rebuild so deletions/exclusions in the KB are reflected in the vector store.
+    store.reset_collection()
+
     files = list(iter_kb_markdown_files(kb_raw_dir))
 
     total_chunks = 0

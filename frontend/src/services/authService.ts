@@ -3,72 +3,106 @@
  */
 
 import { LoginCredentials, AuthResponse, User } from "@/types";
-import { mockUsers } from "@/data/mock-documents";
+
+export class ServiceError extends Error {
+  status: number;
+  code?: string;
+  details?: Record<string, unknown>;
+
+  constructor(message: string, status: number, code?: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "ServiceError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+interface BackendAuthUser {
+  id: string;
+  email: string;
+  username: string;
+  displayName: string;
+  role: User["role"];
+}
+
+interface BackendLoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  tokenType: "bearer";
+  expiresIn: number;
+  user: BackendAuthUser;
+}
+
+interface BackendRefreshResponse {
+  accessToken: string;
+  refreshToken: string;
+  tokenType: "bearer";
+  expiresIn: number;
+}
+
+interface BackendVerifyResponse {
+  valid: boolean;
+  user: BackendAuthUser;
+  expiresAt: string;
+}
 
 class AuthService {
   private readonly TOKEN_KEY = "glencore_auth_token";
+  private readonly REFRESH_TOKEN_KEY = "glencore_refresh_token";
   private readonly USER_KEY = "glencore_user";
 
   /**
    * Login user
-   * TODO: Replace with real API call
    */
   async login(credentials: LoginCredentials): Promise<AuthResponse> {
-    // Simulate API delay
-    await this.simulateDelay(500);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(credentials),
+      });
 
-    // Mock implementation
-    const user = mockUsers.find(
-      u => u.email === credentials.email && u.password === credentials.password
-    );
+      if (!response.ok) {
+        throw await this.readServiceError(response, "Login failed");
+      }
 
-    if (!user) {
-      throw new Error("Invalid email or password");
+      const data = (await response.json()) as BackendLoginResponse;
+      const authUser = this.mapBackendUser(data.user);
+      const expiresAt = new Date(Date.now() + data.expiresIn * 1000).toISOString();
+
+      this.storeSession(authUser, data.accessToken, data.refreshToken);
+
+      return {
+        user: authUser,
+        token: data.accessToken,
+        expiresAt,
+      };
+    } catch (error) {
+      if (error instanceof ServiceError) {
+        throw error;
+      }
+
+      throw new ServiceError("Unable to reach authentication service", 0, "NETWORK_ERROR");
     }
-
-    const token = this.generateMockToken();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
-
-    const authUser: User = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      department: user.department,
-    };
-
-    // Store in localStorage for persistence
-    localStorage.setItem(this.TOKEN_KEY, token);
-    localStorage.setItem(this.USER_KEY, JSON.stringify(authUser));
-
-    return {
-      user: authUser,
-      token,
-      expiresAt,
-    };
-
-    // Future backend implementation:
-    // const response = await fetch('/api/auth/login', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify(credentials)
-    // });
-    // if (!response.ok) throw new Error('Login failed');
-    // return await response.json();
   }
 
   /**
    * Logout user
    */
   async logout(): Promise<void> {
-    await this.simulateDelay(200);
+    const token = this.getToken();
 
-    // Clear localStorage
-    localStorage.removeItem(this.TOKEN_KEY);
-    localStorage.removeItem(this.USER_KEY);
-
-    // Future:
-    // await fetch('/api/auth/logout', { method: 'POST' });
+    try {
+      if (token) {
+        await fetch("/api/auth/logout", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+    } finally {
+      this.clearSession();
+    }
   }
 
   /**
@@ -92,6 +126,10 @@ class AuthService {
     return localStorage.getItem(this.TOKEN_KEY);
   }
 
+  getRefreshToken(): string | null {
+    return localStorage.getItem(this.REFRESH_TOKEN_KEY);
+  }
+
   /**
    * Check if user is authenticated
    */
@@ -103,57 +141,103 @@ class AuthService {
    * Refresh authentication token
    */
   async refreshToken(): Promise<string> {
-    await this.simulateDelay(300);
+    const refreshToken = this.getRefreshToken();
+    if (!refreshToken) {
+      throw new ServiceError("No refresh token available", 401, "UNAUTHORIZED");
+    }
 
-    const newToken = this.generateMockToken();
-    localStorage.setItem(this.TOKEN_KEY, newToken);
+    const response = await fetch("/api/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    });
 
-    return newToken;
+    if (!response.ok) {
+      this.clearSession();
+      throw await this.readServiceError(response, "Failed to refresh token");
+    }
 
-    // Future:
-    // const response = await fetch('/api/auth/refresh', {
-    //   method: 'POST',
-    //   headers: { 'Authorization': `Bearer ${this.getToken()}` }
-    // });
-    // const data = await response.json();
-    // return data.token;
+    const data = (await response.json()) as BackendRefreshResponse;
+    localStorage.setItem(this.TOKEN_KEY, data.accessToken);
+    localStorage.setItem(this.REFRESH_TOKEN_KEY, data.refreshToken);
+    return data.accessToken;
   }
 
   /**
    * Verify token validity
    */
   async verifyToken(): Promise<boolean> {
-    await this.simulateDelay(200);
+    const token = this.getToken();
+    if (!token) {
+      return false;
+    }
 
-    // Mock: Just check if token exists
-    return this.isAuthenticated();
+    const response = await fetch("/api/auth/verify", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
-    // Future:
-    // const response = await fetch('/api/auth/verify', {
-    //   headers: { 'Authorization': `Bearer ${this.getToken()}` }
-    // });
-    // return response.ok;
+    if (response.ok) {
+      const data = (await response.json()) as BackendVerifyResponse;
+      localStorage.setItem(this.USER_KEY, JSON.stringify(this.mapBackendUser(data.user)));
+      return data.valid;
+    }
+
+    if (response.status !== 401) {
+      return false;
+    }
+
+    try {
+      const freshToken = await this.refreshToken();
+      const retry = await fetch("/api/auth/verify", {
+        headers: { Authorization: `Bearer ${freshToken}` },
+      });
+
+      if (!retry.ok) {
+        return false;
+      }
+
+      const data = (await retry.json()) as BackendVerifyResponse;
+      localStorage.setItem(this.USER_KEY, JSON.stringify(this.mapBackendUser(data.user)));
+      return data.valid;
+    } catch {
+      return false;
+    }
   }
 
-  /**
-   * Generate mock JWT token (for development only)
-   */
-  private generateMockToken(): string {
-    const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-    const payload = btoa(JSON.stringify({ 
-      sub: "user_id", 
-      exp: Date.now() + 24 * 60 * 60 * 1000 
-    }));
-    const signature = btoa("mock_signature");
-    return `${header}.${payload}.${signature}`;
+  private mapBackendUser(user: BackendAuthUser): User {
+    return {
+      id: user.id,
+      name: user.displayName,
+      email: user.email,
+      role: user.role,
+    };
   }
 
-  /**
-   * Simulate network delay (for development only)
-   */
-  private simulateDelay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private storeSession(user: User, token: string, refreshToken: string): void {
+    localStorage.setItem(this.TOKEN_KEY, token);
+    localStorage.setItem(this.REFRESH_TOKEN_KEY, refreshToken);
+    localStorage.setItem(this.USER_KEY, JSON.stringify(user));
   }
+
+  private clearSession(): void {
+    localStorage.removeItem(this.TOKEN_KEY);
+    localStorage.removeItem(this.REFRESH_TOKEN_KEY);
+    localStorage.removeItem(this.USER_KEY);
+  }
+
+  private async readServiceError(response: Response, fallbackMessage: string): Promise<ServiceError> {
+    try {
+      const payload = await response.json();
+      const nestedError = payload?.error ?? payload?.detail?.error;
+      const message = nestedError?.message ?? fallbackMessage;
+      const code = nestedError?.code;
+      const details = nestedError?.details;
+      return new ServiceError(message, response.status, code, details);
+    } catch {
+      return new ServiceError(fallbackMessage, response.status);
+    }
+  }
+
 }
 
 // Export singleton instance

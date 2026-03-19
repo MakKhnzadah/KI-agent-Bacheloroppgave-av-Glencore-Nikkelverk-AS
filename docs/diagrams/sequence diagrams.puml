@@ -1,23 +1,29 @@
 @startuml
-' Sequence Diagrams — AI Agent + Process Knowledge Base
+
+' Sequence Diagrams — AI Agent + Process Knowledge Base (Current Implementation)
 
 skinparam style strictuml
 skinparam shadowing false
 
-title Seq 1: Read Knowledge (HTML)
+title Seq 1: Search Knowledge (Vector Search)
 
 actor Employee
-participant HtmlKnowledgeBase
-participant "Storage / Repository\n(Local / Git)" as Storage
+participant "FastAPI API" as API
+participant "Ollama Embeddings" as Embeddings
+participant "Chroma Vector Store" as Chroma
 
-Employee -> HtmlKnowledgeBase : read(page)
-activate HtmlKnowledgeBase
-HtmlKnowledgeBase -> Storage : readHtml(page)
-activate Storage
-Storage --> HtmlKnowledgeBase : htmlContent
-deactivate Storage
-HtmlKnowledgeBase --> Employee : htmlContent
-deactivate HtmlKnowledgeBase
+Employee -> API : GET /vector/search?q=...
+activate API
+API -> Embeddings : embed(q)
+activate Embeddings
+Embeddings --> API : queryEmbedding
+deactivate Embeddings
+API -> Chroma : query(embedding, k)
+activate Chroma
+Chroma --> API : topK chunks + metadata
+deactivate Chroma
+API --> Employee : results[]
+deactivate API
 
 note right of Employee
 Expert User follows the same flow
@@ -27,42 +33,40 @@ end note
 
 newpage
 
-title Seq 2: Review Suggestions (includes Login)
+title Seq 2: Review Suggestions (Approve/Reject)
 
 actor "Expert User" as ExpertUser
-participant AuthService
-participant ReviewService
-participant Session
+participant "FastAPI API" as API
+participant "SQLite Workflow DB" as DB
 
-ExpertUser -> AuthService : login(username, password)
-activate AuthService
-AuthService --> ExpertUser : Session
-deactivate AuthService
+ExpertUser -> API : GET /workflow/suggestions/{id}
+activate API
+API -> DB : SELECT suggestion
+activate DB
+DB --> API : suggestion
+deactivate DB
+API --> ExpertUser : suggestion
+deactivate API
 
-ExpertUser -> ReviewService : review(session, suggestions)
-activate ReviewService
-ReviewService -> Session : validate()
-activate Session
-Session --> ReviewService : valid
-deactivate Session
-
-loop for each Suggestion
-	alt Approve
-		ExpertUser -> ReviewService : approve(session, suggestionId)
-		ReviewService --> ExpertUser : ReviewedSuggestion(decision=APPROVED)
-	else Reject
-		ExpertUser -> ReviewService : reject(session, suggestionId, reason)
-		ReviewService --> ExpertUser : ReviewedSuggestion(decision=REJECTED)
-	end
+alt Approve
+	ExpertUser -> API : POST /workflow/suggestions/{id}/review {decision:approved}
+	activate API
+	API -> DB : INSERT review + UPDATE suggestion.status=approved
+	activate DB
+	DB --> API : ok
+	deactivate DB
+	API --> ExpertUser : status=approved
+	deactivate API
+else Reject
+	ExpertUser -> API : POST /workflow/suggestions/{id}/review {decision:rejected}
+	activate API
+	API -> DB : INSERT review + UPDATE suggestion.status=rejected
+	activate DB
+	DB --> API : ok
+	deactivate DB
+	API --> ExpertUser : status=rejected
+	deactivate API
 end
-
-ReviewService --> ExpertUser : list<ReviewedSuggestion>
-deactivate ReviewService
-
-note right of ReviewService
-Login is included in Review Suggestions
-Approve/Reject are decisions during review
-end note
 
 
 
@@ -70,135 +74,83 @@ end note
 
 newpage
 
-title Seq 3: Upload Documents
+title Seq 3: Upload Document + Generate Draft Suggestion
 
 actor "Expert User" as ExpertUser
-participant UploadService
+participant "FastAPI API" as API
 participant "Document Sources\n(PDF / Email / Text)" as Docs
-participant Document
+participant "Document Parser" as Parser
+participant "Ollama LLM" as LLM
+participant "SQLite Workflow DB" as DB
 
-ExpertUser -> UploadService : upload(source)
-activate UploadService
-UploadService -> Docs : readSelectedDocuments(source)
+ExpertUser -> Docs : select document
 activate Docs
-Docs --> UploadService : rawFiles/streams
+Docs --> ExpertUser : raw file
 deactivate Docs
 
-loop for each file
-	create Document
-	UploadService -> Document : <<create>>
-	UploadService -> Document : set(id, sourceName, content)
-end
-
-UploadService --> ExpertUser : list<Document>
-deactivate UploadService
-
-
-
-
-newpage
-
-title Seq 4: Parse & Normalize
-
-actor "Expert User" as ExpertUser
-participant ParseNormalizeService
-participant Document
-participant NormalizedDocument
-
-ExpertUser -> ParseNormalizeService : parseAndNormalize(docs)
-activate ParseNormalizeService
-
-loop for each Document in docs
-	ParseNormalizeService -> Document : get(content, sourceName)
-	create NormalizedDocument
-	ParseNormalizeService -> NormalizedDocument : <<create>>
-	ParseNormalizeService -> NormalizedDocument : set(id, normalizedText)
-	ParseNormalizeService -> NormalizedDocument : link derivedFrom(Document)
-end
-
-ParseNormalizeService --> ExpertUser : list<NormalizedDocument>
-deactivate ParseNormalizeService
-
-
-
-
-
-newpage
-
-title Seq 5: Generate Update Suggestions (LLM)
-
-actor "Expert User" as ExpertUser
-participant SuggestionGenerator
-participant "Language Model Service\n(Microsoft / OpenAI)" as LLM
-participant NormalizedDocument
-participant Suggestion
-
-ExpertUser -> SuggestionGenerator : generate(normalized)
-activate SuggestionGenerator
-
-SuggestionGenerator -> NormalizedDocument : read(normalizedText)
-
-SuggestionGenerator -> LLM : prompt(normalizedText + KB context)
+ExpertUser -> API : POST /documents/upload (file)
+activate API
+API -> Parser : parse + normalize
+activate Parser
+Parser --> API : normalizedText
+deactivate Parser
+API -> LLM : generate KB draft (YAML + Markdown)
 activate LLM
-LLM --> SuggestionGenerator : suggestionDrafts
+LLM --> API : suggestionDraft
 deactivate LLM
-
-loop for each suggestion draft
-	create Suggestion
-	SuggestionGenerator -> Suggestion : <<create>>
-	SuggestionGenerator -> Suggestion : set(id, changeSummary)
-end
-
-SuggestionGenerator --> ExpertUser : list<Suggestion>
-deactivate SuggestionGenerator
-
-note right of LLM
-Can be local Ollama (Llama 3) or external API
-end note
+API -> DB : INSERT uploads + normalized_documents + suggestions(status=draft)
+activate DB
+DB --> API : ok
+deactivate DB
+API --> ExpertUser : upload_id + suggestion_id
+deactivate API
 
 
 
 
 newpage
 
-title Seq 6: Save Updates to Repository
+title Seq 4: Apply Approved Suggestion + Automatic Re-index
 
 actor "Expert User" as ExpertUser
-participant SaveUpdateService
-participant Session
-participant ReviewedSuggestion
-participant "Storage / Repository\n(Local / Git)" as Storage
-participant UpdatePackage
+participant "FastAPI API" as API
+participant "SQLite Workflow DB" as DB
+participant "Raw KB (Markdown + YAML)" as KB
+participant "KB Indexer" as Indexer
+participant "Ollama Embeddings" as Embeddings
+participant "Chroma Vector Store" as Chroma
 
-ExpertUser -> SaveUpdateService : save(session, reviewed)
-activate SaveUpdateService
+ExpertUser -> API : POST /workflow/suggestions/{id}/apply
+activate API
+API -> DB : check suggestion.status == approved
+activate DB
+DB --> API : ok
+deactivate DB
+API -> KB : write .md file into databases/knowledge_base/raw/
+activate KB
+KB --> API : ok
+deactivate KB
+API -> DB : INSERT applied_changes + UPDATE suggestion.status=applied
+activate DB
+DB --> API : ok
+deactivate DB
+API --> ExpertUser : applied (reindex=scheduled)
+deactivate API
 
-SaveUpdateService -> Session : validate()
-activate Session
-Session --> SaveUpdateService : valid
-deactivate Session
+... background task ...
+Indexer -> KB : read all .md
+activate KB
+KB --> Indexer : docs
+deactivate KB
+Indexer -> Embeddings : embed(chunks)
+activate Embeddings
+Embeddings --> Indexer : embeddings
+deactivate Embeddings
+Indexer -> Chroma : upsert(chunks, metadata)
+activate Chroma
+Chroma --> Indexer : ok
+deactivate Chroma
 
-loop for each ReviewedSuggestion
-	SaveUpdateService -> ReviewedSuggestion : get(decision, suggestionId)
-	alt APPROVED
-		SaveUpdateService -> Storage : writeKnowledgeUpdate(reviewedSuggestion)
-		activate Storage
-		Storage --> SaveUpdateService : ok
-		deactivate Storage
-	else REJECTED
-		note right of SaveUpdateService
-		Rejected suggestions are not applied
-		end note
-	end
-end
-
-create UpdatePackage
-SaveUpdateService -> UpdatePackage : <<create>>
-SaveUpdateService -> UpdatePackage : set(id, appliedAt)
-SaveUpdateService -> UpdatePackage : contains(reviewed)
-
-SaveUpdateService --> ExpertUser : UpdatePackage
-deactivate SaveUpdateService
 
 @enduml
 

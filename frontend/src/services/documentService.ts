@@ -1,223 +1,263 @@
 /**
  * Service for document management and processing.
+ *
+ * Wired to the FastAPI workflow endpoints:
+ * - POST /documents/upload
+ * - GET /workflow/suggestions (+ GET /workflow/suggestions/{id})
+ * - POST /workflow/suggestions/{id}/review
+ * - POST /workflow/suggestions/{id}/apply
+ * - POST /kb/build-html
  */
 
-import { Document, DocumentUpload, DocumentStats } from "@/types";
-import { mockDocuments } from "@/data/mock-documents";
-import { authService, ServiceError } from "@/services/authService";
+import { apiClient } from "./apiClient";
+import type { Document, DocumentCategory, DocumentStats } from "@/types";
+
+type UploadResponse = {
+  upload_id: string;
+  suggestion_id: string;
+  structured_draft: string;
+  suggestion_addon: string;
+  status: string;
+  deduped?: boolean;
+};
+
+type SuggestionListItem = {
+  suggestion_id: string;
+  upload_id: string;
+  status: string;
+  created_at: string;
+  original_filename?: string | null;
+};
+
+type SuggestionDetail = {
+  suggestion_id: string;
+  upload_id: string;
+  status: string;
+  suggestion_json: string;
+  created_at: string;
+};
+
+function normalizeStatus(status: string): Document["status"] {
+  const s = (status || "").toLowerCase();
+  if (s === "rejected") return "rejected";
+  if (s === "approved" || s === "applied") return "approved";
+  return "pending";
+}
+
+function formatUploadedAt(sqliteDateTime: string | undefined): string {
+  if (!sqliteDateTime) return "";
+  // Expect "YYYY-MM-DD HH:MM:SS" from SQLite.
+  const iso = sqliteDateTime.replace(" ", "T") + "Z";
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return sqliteDateTime;
+
+  const day = dt.getUTCDate();
+  const month = dt.toLocaleDateString("nb-NO", { month: "short" });
+  const year = dt.getUTCFullYear();
+  const hh = dt.getUTCHours().toString().padStart(2, "0");
+  const mm = dt.getUTCMinutes().toString().padStart(2, "0");
+  return `${day}. ${month} ${year} - ${hh}:${mm}`;
+}
+
+function extractFrontMatter(doc: string): Record<string, string> {
+  const text = (doc || "").replace(/^\uFEFF/, "");
+  if (!text.startsWith("---\n")) return {};
+
+  const lines = text.split("\n");
+  let endIdx = -1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === "---") {
+      endIdx = i;
+      break;
+    }
+  }
+  if (endIdx === -1) return {};
+
+  const out: Record<string, string> = {};
+  for (const line of lines.slice(1, endIdx)) {
+    const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)\s*$/);
+    if (!m) continue;
+    const key = m[1];
+    let value = m[2] || "";
+    value = value.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+    out[key] = value;
+  }
+  return out;
+}
+
+function pickTitleFromSuggestion(suggestionJson: string, fallback: string): string {
+  const fm = extractFrontMatter(suggestionJson);
+  if (fm.title) return fm.title;
+  const heading = suggestionJson.match(/^#\s+(.+)$/m);
+  return (heading?.[1] || "").trim() || fallback;
+}
+
+function pickCategoryFromSuggestion(suggestionJson: string): DocumentCategory {
+  const fm = extractFrontMatter(suggestionJson);
+  const raw = (fm.category || fm.kategori || "").trim();
+  const normalized = raw.toLowerCase();
+  if (normalized === "sikkerhet") return "Sikkerhet";
+  if (normalized === "vedlikehold") return "Vedlikehold";
+  if (normalized === "miljø" || normalized === "miljo") return "Miljø";
+  if (normalized === "kvalitet") return "Kvalitet";
+  if (normalized === "prosedyre") return "Prosedyre";
+  return "Annet";
+}
+
+function toDocumentFromSuggestion(listItem: SuggestionListItem, detail: SuggestionDetail): Document {
+  const fileName = listItem.original_filename || "document";
+  const revised = detail.suggestion_json || "";
+  const title = pickTitleFromSuggestion(revised, fileName);
+  const category = pickCategoryFromSuggestion(revised);
+  const status = normalizeStatus(detail.status);
+
+  return {
+    id: detail.suggestion_id,
+    title,
+    fileName,
+    category,
+    status,
+    uploadedBy: "System",
+    uploadedAt: formatUploadedAt(detail.created_at || listItem.created_at),
+    originalContent: "",
+    revisedContent: revised,
+    approvedContent: status === "approved" ? revised : undefined,
+  };
+}
 
 class DocumentService {
-  /**
-   * Get all documents
-   * TODO: Replace with API call when backend is ready
-   * Example: const response = await fetch('/api/documents');
-   */
   async getAllDocuments(): Promise<Document[]> {
-    return await this.requestJson<Document[]>("/api/documents");
+    const items = await apiClient.getJson<SuggestionListItem[]>("/workflow/suggestions?limit=200&offset=0");
+    const details = await Promise.all(
+      items.map((s) => apiClient.getJson<SuggestionDetail>(`/workflow/suggestions/${s.suggestion_id}`)),
+    );
+
+    return items.map((item, idx) => toDocumentFromSuggestion(item, details[idx]));
   }
 
-  /**
-   * Get document by ID
-   */
+  async getPendingDocuments(): Promise<Document[]> {
+    const all = await this.getAllDocuments();
+    return all.filter((d) => d.status === "pending");
+  }
+
+  async getApprovedDocuments(): Promise<Document[]> {
+    const all = await this.getAllDocuments();
+    return all.filter((d) => d.status === "approved");
+  }
+
+  async getRejectedDocuments(): Promise<Document[]> {
+    const all = await this.getAllDocuments();
+    return all.filter((d) => d.status === "rejected");
+  }
+
   async getDocumentById(id: string): Promise<Document | null> {
     try {
-      return await this.requestJson<Document>(`/api/documents/${encodeURIComponent(id)}`);
-    } catch (error) {
-      if (error instanceof ServiceError && error.status === 404) {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Get pending documents
-   */
-  async getPendingDocuments(): Promise<Document[]> {
-    return await this.requestJson<Document[]>("/api/documents?status=pending");
-  }
-
-  /**
-   * Get approved documents
-   */
-  async getApprovedDocuments(): Promise<Document[]> {
-    return await this.requestJson<Document[]>("/api/documents?status=approved");
-  }
-
-  /**
-   * Get rejected documents
-   */
-  async getRejectedDocuments(): Promise<Document[]> {
-    return await this.requestJson<Document[]>("/api/documents?status=rejected");
-  }
-
-  /**
-   * Upload new document
-   */
-  async uploadDocument(upload: Partial<DocumentUpload>): Promise<Document> {
-    const payload = {
-      title: upload.title || "Untitled Document",
-      fileName: upload.fileName || "document.pdf",
-      category: upload.category || "Annet",
-      uploadedBy: upload.uploadedBy || "Ukjent bruker",
-      originalContent: upload.originalContent || "",
-      revisedContent: upload.revisedContent || "",
-    };
-
-    return await this.requestJson<Document>("/api/documents", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  }
-
-  /**
-   * Approve document
-   */
-  async approveDocument(id: string): Promise<Document> {
-    const response = await this.requestWithAuthRetry(`/api/documents/${encodeURIComponent(id)}/approve`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-
-    return await response.json();
-  }
-
-  /**
-   * Reject document
-   */
-  async rejectDocument(id: string): Promise<Document> {
-    const response = await this.requestWithAuthRetry(`/api/documents/${encodeURIComponent(id)}/reject`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-
-    return await response.json();
-  }
-
-  /**
-   * Delete document
-   */
-  async deleteDocument(id: string): Promise<void> {
-    await this.requestWithAuthRetry(`/api/documents/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-  }
-
-  private async requestWithAuthRetry(path: string, init: RequestInit): Promise<Response> {
-    const firstToken = authService.getToken();
-    if (!firstToken) {
-      throw new ServiceError("You need to log in before performing this action", 401, "UNAUTHORIZED");
-    }
-
-    const first = await fetch(path, this.withBearer(init, firstToken));
-    if (first.ok) {
-      return first;
-    }
-
-    if (first.status !== 401) {
-      throw await this.readServiceError(first, "Request failed");
-    }
-
-    try {
-      const refreshedToken = await authService.refreshToken();
-      const retry = await fetch(path, this.withBearer(init, refreshedToken));
-      if (!retry.ok) {
-        throw await this.readServiceError(retry, "Request failed");
-      }
-      return retry;
-    } catch (error) {
-      if (error instanceof ServiceError) {
-        throw error;
-      }
-
-      throw new ServiceError("Session expired. Please log in again", 401, "UNAUTHORIZED");
-    }
-  }
-
-  private withBearer(init: RequestInit, token: string): RequestInit {
-    const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${token}`);
-
-    return {
-      ...init,
-      headers,
-    };
-  }
-
-  private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, init);
-    if (!response.ok) {
-      throw await this.readServiceError(response, "Request failed");
-    }
-    return (await response.json()) as T;
-  }
-
-  private async readServiceError(response: Response, fallbackMessage: string): Promise<ServiceError> {
-    try {
-      const payload = await response.json();
-      const nestedError = payload?.error ?? payload?.detail?.error;
-      const message = nestedError?.message ?? fallbackMessage;
-      const code = nestedError?.code;
-      const details = nestedError?.details;
-      return new ServiceError(message, response.status, code, details);
+      const detail = await apiClient.getJson<SuggestionDetail>(`/workflow/suggestions/${id}`);
+      const listItem: SuggestionListItem = {
+        suggestion_id: detail.suggestion_id,
+        upload_id: detail.upload_id,
+        status: detail.status,
+        created_at: detail.created_at,
+        original_filename: null,
+      };
+      return toDocumentFromSuggestion(listItem, detail);
     } catch {
-      return new ServiceError(fallbackMessage, response.status);
+      return null;
     }
   }
 
-  /**
-   * Get document statistics
-   */
-  async getDocumentStats(): Promise<DocumentStats> {
-    await this.simulateDelay(200);
-    
+  async uploadDocument(params: {
+    file: File;
+    title?: string;
+    category?: DocumentCategory;
+    uploadedBy?: string;
+  }): Promise<Document> {
+    const form = new FormData();
+    form.append("file", params.file);
+
+    const res = await apiClient.postForm<UploadResponse>("/documents/upload", form);
+
+    const revised = [res.structured_draft, res.suggestion_addon].filter(Boolean).join("\n\n").trim();
+    const title = (params.title || "").trim() || pickTitleFromSuggestion(revised, params.file.name);
+    const category = params.category || pickCategoryFromSuggestion(revised);
+
+    const now = new Date();
+    const formattedDate = `${now.getDate()}. ${now.toLocaleDateString("nb-NO", { month: "short" })} ${now.getFullYear()} - ${now.toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" })}`;
+
     return {
-      total: mockDocuments.length,
-      pending: mockDocuments.filter(d => d.status === "pending").length,
-      approved: mockDocuments.filter(d => d.status === "approved").length,
-      rejected: mockDocuments.filter(d => d.status === "rejected").length,
+      id: res.suggestion_id,
+      title,
+      fileName: params.file.name,
+      category,
+      status: normalizeStatus(res.status),
+      uploadedBy: params.uploadedBy || "Ukjent bruker",
+      uploadedAt: formattedDate,
+      originalContent: "",
+      revisedContent: revised,
+      approvedContent: undefined,
     };
-    
-    // Future: const response = await fetch('/api/documents/stats');
   }
 
-  /**
-   * Search documents
-   */
+  async approveDocument(id: string, reviewer?: string): Promise<Document> {
+    await apiClient.postJson(`/workflow/suggestions/${id}/review`, {
+      decision: "approved",
+      reviewer: reviewer || "System",
+    });
+
+    await apiClient.postJson(`/workflow/suggestions/${id}/apply`, {});
+
+    // Build the HTML version of the knowledge base after apply.
+    await apiClient.postJson("/kb/build-html", {});
+
+    const updated = await this.getDocumentById(id);
+    if (!updated) throw new Error("Document not found after approval");
+    return updated;
+  }
+
+  async rejectDocument(id: string, reviewer?: string): Promise<Document> {
+    await apiClient.postJson(`/workflow/suggestions/${id}/review`, {
+      decision: "rejected",
+      reviewer: reviewer || "System",
+    });
+
+    const updated = await this.getDocumentById(id);
+    if (!updated) throw new Error("Document not found after rejection");
+    return updated;
+  }
+
+  async deleteDocument(_id: string): Promise<void> {
+    await apiClient.delete(`/workflow/suggestions/${_id}`);
+  }
+
+  async getDocumentStats(): Promise<DocumentStats> {
+    const docs = await this.getAllDocuments();
+    return {
+      total: docs.length,
+      pending: docs.filter((d) => d.status === "pending").length,
+      approved: docs.filter((d) => d.status === "approved").length,
+      rejected: docs.filter((d) => d.status === "rejected").length,
+    };
+  }
+
   async searchDocuments(query: string): Promise<Document[]> {
-    await this.simulateDelay(300);
-    
-    const lowerQuery = query.toLowerCase();
-    return mockDocuments.filter(doc => 
-      doc.title.toLowerCase().includes(lowerQuery) ||
-      doc.fileName.toLowerCase().includes(lowerQuery) ||
-      doc.category.toLowerCase().includes(lowerQuery)
+    const q = (query || "").trim();
+    if (!q) return [];
+
+    const all = await this.getAllDocuments();
+    const lower = q.toLowerCase();
+    return all.filter(
+      (d) =>
+        d.title.toLowerCase().includes(lower) ||
+        d.fileName.toLowerCase().includes(lower) ||
+        d.category.toLowerCase().includes(lower) ||
+        d.revisedContent.toLowerCase().includes(lower),
     );
-    
-    // Future: const response = await fetch(`/api/documents/search?q=${query}`);
   }
 
-  /**
-   * Filter documents by category
-   */
   async filterByCategory(category: string): Promise<Document[]> {
-    await this.simulateDelay(200);
-    
-    return mockDocuments.filter(doc => doc.category === category);
-    
-    // Future: const response = await fetch(`/api/documents?category=${category}`);
-  }
-
-  /**
-   * Simulate network delay (for development only)
-   */
-  private simulateDelay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    const all = await this.getAllDocuments();
+    return all.filter((d) => d.category === (category as any));
   }
 }
 
-// Export singleton instance
 export const documentService = new DocumentService();

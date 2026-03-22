@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
+from chromadb.errors import InvalidCollectionException
 
 
 @dataclass
@@ -42,12 +43,22 @@ class ChromaVectorStore:
         if metadatas is None:
             metadatas = [{} for _ in ids]
 
-        self._collection.upsert(
-            ids=ids,
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadatas,
-        )
+        try:
+            self._collection.upsert(
+                ids=ids,
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
+        except InvalidCollectionException:
+            # Another process/task may have recreated the collection.
+            self._collection = self._client.get_or_create_collection(name=self.collection_name)
+            self._collection.upsert(
+                ids=ids,
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
 
     def query(
         self,
@@ -56,9 +67,18 @@ class ChromaVectorStore:
         n_results: int = 5,
         where: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return self._collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
+        try:
+            return self._collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+        except InvalidCollectionException:
+            self._collection = self._client.get_or_create_collection(name=self.collection_name)
+            return self._collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )

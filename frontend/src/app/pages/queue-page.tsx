@@ -190,6 +190,11 @@ export function QueuePage() {
                             <span className="inline-block px-2 py-0.5 bg-[#000000]/5 rounded text-xs font-semibold text-[#000000]">
                               {doc.category}
                             </span>
+                            {doc.isProcessing && (
+                              <span className="inline-block ml-2 px-2 py-0.5 bg-[#00AFAA]/10 rounded text-xs font-semibold text-[#007b77]">
+                                AI behandler...
+                              </span>
+                            )}
                           </div>
                           <p className="text-sm text-[#000000]">
                             Lastet opp av {doc.uploadedBy} · {doc.uploadedAt}

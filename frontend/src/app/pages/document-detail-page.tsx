@@ -1,10 +1,12 @@
 import { Sidebar } from "@/app/components/sidebar";
 import { useParams, useNavigate } from "react-router";
 import { ArrowLeft, Download, FileText, Calendar, User, Eye } from "lucide-react";
+import { useToast } from "@/app/context/toast-context";
 
 export function DocumentDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { showToast } = useToast();
 
   const documents: Record<string, {
     title: string;
@@ -278,7 +280,7 @@ export function DocumentDetailPage() {
   }
 
   const handleDownload = () => {
-    alert(`Last ned: ${doc.title}.pdf`);
+    showToast(`Nedlasting startet: ${doc.title}.pdf`, "success");
   };
 
   return (
@@ -296,7 +298,10 @@ export function DocumentDetailPage() {
             </button>
             <h1 className="text-2xl text-[#000000] font-semibold">Dokumentdetaljer</h1>
           </div>
-          <button className="flex items-center gap-2 px-4 py-2 bg-[#00AFAA] hover:bg-[#00AFAA]/90 text-white rounded-md transition-colors text-sm font-semibold">
+          <button
+            onClick={handleDownload}
+            className="flex items-center gap-2 px-4 py-2 bg-[#00AFAA] hover:bg-[#00AFAA]/90 text-white rounded-md transition-colors text-sm font-semibold"
+          >
             <Download className="w-4 h-4" />
             Last ned PDF
           </button>

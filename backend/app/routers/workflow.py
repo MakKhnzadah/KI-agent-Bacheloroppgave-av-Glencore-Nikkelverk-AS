@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from typing import Literal, Optional
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 import yaml
 from yaml import YAMLError
@@ -21,6 +22,7 @@ from app.vector_store.ollama_embeddings import OllamaEmbeddingClient
 router = APIRouter(prefix="/workflow", tags=["workflow"])
 
 logger = logging.getLogger(__name__)
+_reindex_lock = threading.Lock()
 
 
 def _reindex_kb_to_chroma() -> None:
@@ -29,20 +31,27 @@ def _reindex_kb_to_chroma() -> None:
     Runs best-effort; errors are logged and do not affect the apply response.
     """
 
-    cfg = load_vector_store_config()
-    store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
-    embedder = OllamaEmbeddingClient(base_url=cfg.ollama_base_url, model=cfg.ollama_embed_model)
+    if not _reindex_lock.acquire(blocking=False):
+        logger.info("KB re-index already in progress; skipping duplicate request")
+        return
 
     try:
-        stats = index_kb(store=store, embedder=embedder)
-        logger.info(
-            "KB re-index completed: files=%s chunks=%s persist_dir=%s",
-            stats.get("files"),
-            stats.get("chunks"),
-            str(cfg.persist_dir),
-        )
-    except Exception:
-        logger.exception("KB re-index failed")
+        cfg = load_vector_store_config()
+        store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
+        embedder = OllamaEmbeddingClient(base_url=cfg.ollama_base_url, model=cfg.ollama_embed_model)
+
+        try:
+            stats = index_kb(store=store, embedder=embedder)
+            logger.info(
+                "KB re-index completed: files=%s chunks=%s persist_dir=%s",
+                stats.get("files"),
+                stats.get("chunks"),
+                str(cfg.persist_dir),
+            )
+        except Exception:
+            logger.exception("KB re-index failed")
+    finally:
+        _reindex_lock.release()
 
 
 def _external_status(db_status: str) -> str:
@@ -145,6 +154,22 @@ def _resolve_kb_path(kb_path: str) -> "Path":
     return full
 
 
+def _next_available_kb_path(base_name: str, suggestion_id: str) -> "Path":
+    """Return an available KB path under raw/, avoiding collisions."""
+    candidate = _resolve_kb_path(f"{base_name}.md")
+    if not candidate.exists():
+        return candidate
+
+    suffixes = [suggestion_id[:8]]
+    suffixes.extend(str(i) for i in range(2, 1000))
+    for suffix in suffixes:
+        candidate = _resolve_kb_path(f"{base_name}-{suffix}.md")
+        if not candidate.exists():
+            return candidate
+
+    raise HTTPException(status_code=409, detail="Could not allocate unique KB file path")
+
+
 class ReviewRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     reviewer: Optional[str] = None
@@ -167,12 +192,46 @@ class SuggestionResponse(BaseModel):
     created_at: str
 
 
+class SuggestionListItem(BaseModel):
+    suggestion_id: str
+    upload_id: str
+    status: str
+    created_at: str
+    original_filename: Optional[str] = None
+
+
 class ApplyRequest(BaseModel):
     kb_path: Optional[str] = Field(
         default=None,
         description="Relative path under databases/knowledge_base/raw/ (e.g., 'procedures/pump-a.md'). If omitted, a name is derived from YAML 'id' or 'title'.",
     )
     notes: Optional[str] = None
+
+
+@router.get("/suggestions", response_model=list[SuggestionListItem])
+def list_suggestions(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0)) -> list[SuggestionListItem]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.suggestion_id, s.upload_id, s.status, s.created_at, u.original_filename
+            FROM suggestions s
+            LEFT JOIN uploads u ON u.upload_id = s.upload_id
+            ORDER BY s.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+    return [
+        SuggestionListItem(
+            suggestion_id=row["suggestion_id"],
+            upload_id=row["upload_id"],
+            status=_external_status(row["status"]),
+            created_at=row["created_at"],
+            original_filename=row["original_filename"],
+        )
+        for row in rows
+    ]
 
 
 class ApplyResponse(BaseModel):
@@ -283,13 +342,13 @@ def apply_suggestion(suggestion_id: str, request: ApplyRequest, background_tasks
         if request.kb_path:
             kb_file = _resolve_kb_path(request.kb_path)
         else:
-            kb_file = _resolve_kb_path(f"{base_name}.md")
+            kb_file = _next_available_kb_path(base_name, suggestion_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     kb_file.parent.mkdir(parents=True, exist_ok=True)
 
-    if kb_file.exists() and not request.kb_path:
+    if kb_file.exists() and request.kb_path:
         raise HTTPException(
             status_code=409,
             detail=f"KB file already exists: {kb_file.as_posix()}. Provide 'kb_path' to choose a different file.",
@@ -323,3 +382,19 @@ def apply_suggestion(suggestion_id: str, request: ApplyRequest, background_tasks
         status="applied",
         reindex="scheduled",
     )
+
+
+@router.delete("/suggestions/{suggestion_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_suggestion(suggestion_id: str) -> Response:
+    with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT suggestion_id FROM suggestions WHERE suggestion_id = ?",
+            (suggestion_id,),
+        ).fetchone()
+
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Suggestion not found")
+
+        conn.execute("DELETE FROM suggestions WHERE suggestion_id = ?", (suggestion_id,))
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

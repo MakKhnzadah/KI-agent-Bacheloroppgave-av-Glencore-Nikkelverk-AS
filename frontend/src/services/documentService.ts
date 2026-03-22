@@ -6,11 +6,12 @@
  * - GET /workflow/suggestions (+ GET /workflow/suggestions/{id})
  * - POST /workflow/suggestions/{id}/review
  * - POST /workflow/suggestions/{id}/apply
- * - POST /kb/build-html
  */
 
 import { apiClient } from "./apiClient";
 import type { Document, DocumentCategory, DocumentStats } from "@/types";
+
+const PROCESSING_MODEL_MARKER = "__processing__";
 
 type UploadResponse = {
   upload_id: string;
@@ -33,6 +34,7 @@ type SuggestionDetail = {
   suggestion_id: string;
   upload_id: string;
   status: string;
+  model?: string | null;
   suggestion_json: string;
   created_at: string;
 };
@@ -117,6 +119,7 @@ function toDocumentFromSuggestion(listItem: SuggestionListItem, detail: Suggesti
     fileName,
     category,
     status,
+    isProcessing: detail.model === PROCESSING_MODEL_MARKER,
     uploadedBy: "System",
     uploadedAt: formatUploadedAt(detail.created_at || listItem.created_at),
     originalContent: "",
@@ -190,6 +193,7 @@ class DocumentService {
       fileName: params.file.name,
       category,
       status: normalizeStatus(res.status),
+      isProcessing: true,
       uploadedBy: params.uploadedBy || "Ukjent bruker",
       uploadedAt: formattedDate,
       originalContent: "",
@@ -202,12 +206,9 @@ class DocumentService {
     await apiClient.postJson(`/workflow/suggestions/${id}/review`, {
       decision: "approved",
       reviewer: reviewer || "System",
-    });
+    }, { requireAuth: true });
 
-    await apiClient.postJson(`/workflow/suggestions/${id}/apply`, {});
-
-    // Build the HTML version of the knowledge base after apply.
-    await apiClient.postJson("/kb/build-html", {});
+    await apiClient.postJson(`/workflow/suggestions/${id}/apply`, {}, { requireAuth: true });
 
     const updated = await this.getDocumentById(id);
     if (!updated) throw new Error("Document not found after approval");
@@ -218,7 +219,7 @@ class DocumentService {
     await apiClient.postJson(`/workflow/suggestions/${id}/review`, {
       decision: "rejected",
       reviewer: reviewer || "System",
-    });
+    }, { requireAuth: true });
 
     const updated = await this.getDocumentById(id);
     if (!updated) throw new Error("Document not found after rejection");
@@ -226,7 +227,7 @@ class DocumentService {
   }
 
   async deleteDocument(_id: string): Promise<void> {
-    await apiClient.delete(`/workflow/suggestions/${_id}`);
+    await apiClient.delete(`/workflow/suggestions/${_id}`, { requireAuth: true });
   }
 
   async getDocumentStats(): Promise<DocumentStats> {

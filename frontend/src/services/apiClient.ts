@@ -1,9 +1,16 @@
+import { authService } from "./authService";
+
 type ApiErrorPayload = {
   error?: {
     code?: string;
     message?: string;
     details?: Record<string, unknown>;
   };
+};
+
+type ApiClientRequestInit = RequestInit & {
+  requireAuth?: boolean;
+  retryOn401?: boolean;
 };
 
 export class ApiError extends Error {
@@ -22,7 +29,7 @@ export class ApiError extends Error {
 
 function getApiBaseUrl(): string {
   const raw = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined;
-  const base = (raw || "http://127.0.0.1:8000").trim();
+  const base = (raw || "http://127.0.0.1:8001").trim();
   return base.replace(/\/+$/, "");
 }
 
@@ -51,11 +58,48 @@ async function throwIfNotOk(res: Response): Promise<void> {
   );
 }
 
+function withBearerAuthorization(headers: HeadersInit | undefined, token: string): Headers {
+  const merged = new Headers(headers || {});
+  merged.set("Authorization", `Bearer ${token}`);
+  return merged;
+}
+
+async function request(path: string, init?: ApiClientRequestInit): Promise<Response> {
+  const { requireAuth = false, retryOn401 = requireAuth, ...requestInit } = init || {};
+  const url = `${getApiBaseUrl()}${path}`;
+
+  const token = requireAuth ? authService.getToken() : null;
+  const initialHeaders = requireAuth && token
+    ? withBearerAuthorization(requestInit.headers, token)
+    : requestInit.headers;
+
+  let response = await fetch(url, {
+    ...requestInit,
+    headers: initialHeaders,
+  });
+
+  if (response.status !== 401 || !requireAuth || !retryOn401) {
+    return response;
+  }
+
+  try {
+    const freshToken = await authService.refreshToken();
+    response = await fetch(url, {
+      ...requestInit,
+      headers: withBearerAuthorization(requestInit.headers, freshToken),
+    });
+  } catch {
+    return response;
+  }
+
+  return response;
+}
+
 export const apiClient = {
   baseUrl: getApiBaseUrl(),
 
-  async getJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${getApiBaseUrl()}${path}`, {
+  async getJson<T>(path: string, init?: ApiClientRequestInit): Promise<T> {
+    const res = await request(path, {
       ...init,
       method: "GET",
       headers: {
@@ -68,8 +112,8 @@ export const apiClient = {
     return (await res.json()) as T;
   },
 
-  async postJson<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${getApiBaseUrl()}${path}`, {
+  async postJson<T>(path: string, body?: unknown, init?: ApiClientRequestInit): Promise<T> {
+    const res = await request(path, {
       ...init,
       method: "POST",
       headers: {
@@ -84,8 +128,8 @@ export const apiClient = {
     return (await res.json()) as T;
   },
 
-  async patchJson<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${getApiBaseUrl()}${path}`, {
+  async patchJson<T>(path: string, body?: unknown, init?: ApiClientRequestInit): Promise<T> {
+    const res = await request(path, {
       ...init,
       method: "PATCH",
       headers: {
@@ -100,8 +144,8 @@ export const apiClient = {
     return (await res.json()) as T;
   },
 
-  async postForm<T>(path: string, form: FormData, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${getApiBaseUrl()}${path}`, {
+  async postForm<T>(path: string, form: FormData, init?: ApiClientRequestInit): Promise<T> {
+    const res = await request(path, {
       ...init,
       method: "POST",
       body: form,
@@ -111,8 +155,8 @@ export const apiClient = {
     return (await res.json()) as T;
   },
 
-  async delete(path: string, init?: RequestInit): Promise<void> {
-    const res = await fetch(`${getApiBaseUrl()}${path}`, {
+  async delete(path: string, init?: ApiClientRequestInit): Promise<void> {
+    const res = await request(path, {
       ...init,
       method: "DELETE",
       headers: {

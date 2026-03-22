@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from "react";
 import { documentService } from "@/services";
 
 export interface Document {
@@ -7,6 +7,7 @@ export interface Document {
   fileName: string;
   category: string;
   status: "pending" | "approved" | "rejected";
+  isProcessing?: boolean;
   uploadedBy: string;
   uploadedAt: string;
   originalContent: string;
@@ -16,7 +17,12 @@ export interface Document {
 
 interface DocumentsContextType {
   documents: Document[];
-  addDocument: (doc: Omit<Document, "id" | "uploadedAt" | "status">) => Promise<void>;
+  addDocument: (doc: {
+    file: File;
+    title: string;
+    category: string;
+    uploadedBy: string;
+  }) => Promise<void>;
   approveDocument: (id: string) => Promise<void>;
   rejectDocument: (id: string) => Promise<void>;
   deleteDocument: (id: string) => Promise<void>;
@@ -32,30 +38,48 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load initial data from documentService
-  useEffect(() => {
-    async function loadDocuments() {
-      try {
+  const loadDocuments = useCallback(async (showLoading: boolean) => {
+    try {
+      if (showLoading) {
         setIsLoading(true);
-        const docs = await documentService.getAllDocuments();
-        setDocuments(docs);
-      } catch (error) {
-        console.error("Failed to load documents:", error);
-      } finally {
+      }
+      const docs = await documentService.getAllDocuments();
+      setDocuments(docs);
+    } catch (error) {
+      console.error("Failed to load documents:", error);
+    } finally {
+      if (showLoading) {
         setIsLoading(false);
       }
     }
-
-    loadDocuments();
   }, []);
 
-  const addDocument = async (doc: Omit<Document, "id" | "uploadedAt" | "status">) => {
+  // Initial load
+  useEffect(() => {
+    void loadDocuments(true);
+  }, [loadDocuments]);
+
+  // Poll while any uploaded suggestion is still being processed by AI.
+  useEffect(() => {
+    const hasProcessing = documents.some((doc) => doc.isProcessing);
+    if (!hasProcessing) {
+      return;
+    }
+
+    const id = window.setInterval(() => {
+      void loadDocuments(false);
+    }, 3000);
+
+    return () => window.clearInterval(id);
+  }, [documents, loadDocuments]);
+
+  const addDocument = async (doc: { file: File; title: string; category: string; uploadedBy: string }) => {
     try {
       const newDoc = await documentService.uploadDocument({
-        ...doc,
+        file: doc.file,
+        title: doc.title,
         category: doc.category as any,
-        originalContent: doc.originalContent,
-        revisedContent: doc.revisedContent,
+        uploadedBy: doc.uploadedBy,
       });
       
       setDocuments((prev) => [newDoc, ...prev]);

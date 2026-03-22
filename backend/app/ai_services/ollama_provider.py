@@ -1,11 +1,10 @@
-from urllib import response
-
+import os
 import requests
 
 class OllamaProvider:
-    def __init__(self, model: str = "llama3:8b" ):
-        self.model = model
-        self.url = "http://localhost:11434/api/generate"
+    def __init__(self, model: str = "llama3:8b"):
+        self.model = os.getenv("OLLAMA_MODEL", model)
+        self.url = os.getenv("OLLAMA_GENERATE_URL", "http://localhost:11434/api/generate")
 
     def generate(self, prompt: str) -> str:
         response = requests.post(
@@ -17,7 +16,8 @@ class OllamaProvider:
                 "options": {
                     "temperature": 0
                 }
-            }
+            },
+            timeout=120,
         )
         print("STATUS:", response.status_code)
         print("BODY:", response.text)

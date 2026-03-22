@@ -18,6 +18,7 @@ export interface Document {
   fileName: string;
   category: DocumentCategory;
   status: DocumentStatus;
+  isProcessing?: boolean;
   uploadedBy: string;
   uploadedAt: string;
   originalContent: string;

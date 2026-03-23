@@ -1,12 +1,16 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .routers import api_activities, api_auth, api_documents, documents, health, vector_search, workflow
+from .routers import ai_agent, api_activities, api_auth, api_documents, documents, health, workflow
 from .workflow_db.db import init_db
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -76,5 +80,11 @@ app.include_router(documents.router)
 app.include_router(api_documents.router)
 app.include_router(api_activities.router)
 app.include_router(api_auth.router)
-app.include_router(vector_search.router)
+app.include_router(ai_agent.router)
+try:
+	from .routers import vector_search
+	app.include_router(vector_search.router)
+except Exception as exc:
+	# Vector search is optional; it requires chromadb + build deps on some platforms.
+	logger.info("Vector search router disabled (%s)", exc)
 app.include_router(workflow.router)

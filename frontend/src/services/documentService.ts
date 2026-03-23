@@ -39,6 +39,83 @@ type SuggestionDetail = {
   created_at: string;
 };
 
+type SuggestionOriginal = {
+  suggestion_id: string;
+  upload_id: string;
+  original_filename?: string | null;
+  text: string;
+};
+
+type SimilarityMatch = {
+  kb_path: string;
+  title?: string | null;
+  jaccard: number;
+  coverage_new: number;
+  coverage_existing: number;
+};
+
+type SimilarityResponse = {
+  suggestion_id: string;
+  matches: SimilarityMatch[];
+};
+
+type SimilarityCheckRequest = {
+  document: string;
+};
+
+type SimilarityCheckResponse = {
+  matches: SimilarityMatch[];
+};
+
+type ReviseRequest = {
+  document: string;
+  instruction: string;
+};
+
+type ReviseResponse = {
+  message: string;
+  updated_document: string;
+};
+
+type KnowledgeSource = {
+  id: string;
+  title: string;
+  author: string;
+  date: string;
+  category: string;
+};
+
+type KnowledgeChatTurn = {
+  role: "user" | "bot";
+  message: string;
+};
+
+type KnowledgeChatRequest = {
+  message: string;
+  category?: string;
+  history?: KnowledgeChatTurn[];
+};
+
+type KnowledgeChatResponse = {
+  answer: string;
+  sources: KnowledgeSource[];
+};
+
+type KbStatsResponse = {
+  total: number;
+  by_category: Record<string, number>;
+};
+
+type KbDocumentResponse = {
+  id: string;
+  kb_path: string;
+  title: string;
+  author: string;
+  date: string;
+  category: string;
+  content: string;
+};
+
 function normalizeStatus(status: string): Document["status"] {
   const s = (status || "").toLowerCase();
   if (s === "rejected") return "rejected";
@@ -129,6 +206,69 @@ function toDocumentFromSuggestion(listItem: SuggestionListItem, detail: Suggesti
 }
 
 class DocumentService {
+  getOriginalFileUrl(suggestionId: string): string {
+    return `${apiClient.baseUrl}/workflow/suggestions/${suggestionId}/file`;
+  }
+
+  async getSuggestionSimilarity(
+    suggestionId: string,
+    params?: {
+      limit?: number;
+      minCoverageNew?: number;
+      excludeKbPath?: string;
+    },
+  ): Promise<SimilarityResponse> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.minCoverageNew !== undefined) qs.set("min_coverage_new", String(params.minCoverageNew));
+    if (params?.excludeKbPath) qs.set("exclude_kb_path", params.excludeKbPath);
+
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return apiClient.getJson<SimilarityResponse>(`/workflow/suggestions/${suggestionId}/similarity${suffix}`);
+  }
+
+  async checkSimilarityForDocument(
+    document: string,
+    params?: {
+      limit?: number;
+      minCoverageNew?: number;
+      excludeKbPath?: string;
+    },
+  ): Promise<SimilarityCheckResponse> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.minCoverageNew !== undefined) qs.set("min_coverage_new", String(params.minCoverageNew));
+    if (params?.excludeKbPath) qs.set("exclude_kb_path", params.excludeKbPath);
+
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    const body: SimilarityCheckRequest = { document: document || "" };
+    return apiClient.postJson<SimilarityCheckResponse>(`/workflow/similarity-check${suffix}`, body);
+  }
+
+  async reviseDocument(params: ReviseRequest): Promise<ReviseResponse> {
+    return apiClient.postJson<ReviseResponse>("/agent/revise", {
+      document: params.document,
+      instruction: params.instruction,
+    });
+  }
+
+  async askKnowledgeBank(params: KnowledgeChatRequest): Promise<KnowledgeChatResponse> {
+    return apiClient.postJson<KnowledgeChatResponse>("/agent/knowledge-chat", {
+      message: params.message,
+      category: params.category,
+      history: params.history,
+    });
+  }
+
+  async getKnowledgeBankStats(): Promise<KbStatsResponse> {
+    return apiClient.getJson<KbStatsResponse>("/workflow/kb/stats");
+  }
+
+  async getKnowledgeBankDocument(kbPath: string): Promise<KbDocumentResponse> {
+    const qs = new URLSearchParams({ kb_path: kbPath });
+    return apiClient.getJson<KbDocumentResponse>(`/workflow/kb/document?${qs.toString()}`);
+  }
+
   async getAllDocuments(): Promise<Document[]> {
     const items = await apiClient.getJson<SuggestionListItem[]>("/workflow/suggestions?limit=200&offset=0");
     const details = await Promise.all(
@@ -136,6 +276,11 @@ class DocumentService {
     );
 
     return items.map((item, idx) => toDocumentFromSuggestion(item, details[idx]));
+  }
+
+  async getOriginalContent(suggestionId: string): Promise<string> {
+    const res = await apiClient.getJson<SuggestionOriginal>(`/workflow/suggestions/${suggestionId}/original`);
+    return res.text || "";
   }
 
   async getPendingDocuments(): Promise<Document[]> {

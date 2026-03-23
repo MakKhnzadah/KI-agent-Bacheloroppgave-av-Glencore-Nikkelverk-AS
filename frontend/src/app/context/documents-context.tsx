@@ -23,6 +23,7 @@ interface DocumentsContextType {
     category: string;
     uploadedBy: string;
   }) => Promise<void>;
+  loadOriginalContent: (id: string) => Promise<string>;
   approveDocument: (id: string) => Promise<void>;
   rejectDocument: (id: string) => Promise<void>;
   deleteDocument: (id: string) => Promise<void>;
@@ -89,6 +90,22 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const loadOriginalContent = async (id: string): Promise<string> => {
+    const existing = documents.find((d) => d.id === id);
+    if (existing?.originalContent) {
+      return existing.originalContent;
+    }
+
+    try {
+      const text = await documentService.getOriginalContent(id);
+      setDocuments((prev) => prev.map((d) => (d.id === id ? { ...d, originalContent: text } : d)));
+      return text;
+    } catch (error) {
+      console.error("Failed to load original content:", error);
+      throw error;
+    }
+  };
+
   const approveDocument = async (id: string) => {
     try {
       const updatedDoc = await documentService.approveDocument(id);
@@ -144,6 +161,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
       value={{
         documents,
         addDocument,
+        loadOriginalContent,
         approveDocument,
         rejectDocument,
         deleteDocument,

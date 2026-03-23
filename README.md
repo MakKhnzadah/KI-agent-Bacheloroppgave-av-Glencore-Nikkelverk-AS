@@ -133,8 +133,8 @@ Denne repoen er scaffoldet for en CLI-basert MVP som følger use-case flyten:
 
 ### Struktur
 - `backend/`: Python backend/CLI
-- `databases/knowledge_base/raw/`: Kunnskapsbank i Markdown + YAML front matter
-- `databases/knowledge_base/html/`: Generert HTML (bygges av script)
+- `databases/knowledge_base/raw/`: Kunnskapsbank i Markdown + YAML front matter (lokalt, ikke committet)
+- `databases/knowledge_base/html/`: Generert HTML (lokalt, bygges av script)
 - `databases/data/uploads/`: Opplastede kilder (lokalt)
 - `databases/data/normalized/`: Normaliserte mellomfiler (lokalt)
 - `databases/data/suggestions/`: Forslag som JSON (lokalt)

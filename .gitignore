@@ -5,10 +5,19 @@ __pycache__/
 # Env variables
 .env
 venv/
+.venv/
+.vscode/
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 
 # Generated artifacts / local data (do not commit)
 databases/data/
 databases/knowledge_base/html/
+databases/knowledge_base/raw/
 databases/vector_store/
 
 # SQLite (local only)
@@ -17,9 +26,15 @@ databases/vector_store/
 # Optional local-only files
 *.qea
 
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*.swp
+.coverage
+coverage/
+
 node_modules/
 dist/
 .vite/
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/

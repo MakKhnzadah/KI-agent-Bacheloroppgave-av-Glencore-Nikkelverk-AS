@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import threading
 import uuid
 from typing import Literal, Optional
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import yaml
 from yaml import YAMLError
@@ -14,9 +17,7 @@ from yaml import YAMLError
 from app.workflow_db.db import get_connection
 from app.vector_store.config import _repo_root_from_here
 from app.vector_store.config import load_vector_store_config
-from app.vector_store.chroma_store import ChromaVectorStore
-from app.vector_store.kb_indexer import index_kb
-from app.vector_store.ollama_embeddings import OllamaEmbeddingClient
+from app.kb.kb_reader import get_kb_doc, kb_stats
 
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
@@ -36,6 +37,14 @@ def _reindex_kb_to_chroma() -> None:
         return
 
     try:
+        try:
+            from app.vector_store.chroma_store import ChromaVectorStore
+            from app.vector_store.kb_indexer import index_kb
+            from app.vector_store.ollama_embeddings import OllamaEmbeddingClient
+        except Exception:
+            logger.info("Vector search disabled (chromadb not installed); skipping KB re-index")
+            return
+
         cfg = load_vector_store_config()
         store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
         embedder = OllamaEmbeddingClient(base_url=cfg.ollama_base_url, model=cfg.ollama_embed_model)
@@ -170,6 +179,119 @@ def _next_available_kb_path(base_name: str, suggestion_id: str) -> "Path":
     raise HTTPException(status_code=409, detail="Could not allocate unique KB file path")
 
 
+_WORD_RE = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+", re.UNICODE)
+
+
+def _tokenize_for_similarity(text: str, *, max_tokens: int = 6000) -> list[str]:
+    tokens = _WORD_RE.findall((text or "").lower())
+    if len(tokens) > max_tokens:
+        tokens = tokens[:max_tokens]
+    return tokens
+
+
+def _shingles(tokens: list[str], *, n: int = 5, max_shingles: int = 20000) -> set[int]:
+    if n <= 0:
+        raise ValueError("n must be >= 1")
+    if len(tokens) < n:
+        return set()
+
+    out: set[int] = set()
+    for i in range(0, len(tokens) - n + 1):
+        sh = " ".join(tokens[i : i + n])
+        # Stable 64-bit-ish hash (avoid Python's randomized hash())
+        h = hashlib.blake2b(sh.encode("utf-8"), digest_size=8).digest()
+        out.add(int.from_bytes(h, "big"))
+        if len(out) >= max_shingles:
+            break
+    return out
+
+
+def _similarity_metrics(new_text: str, existing_text: str) -> tuple[float, float, float]:
+    """Return (jaccard, coverage_new, coverage_existing) in [0..1].
+
+    coverage_new answers: "How much of the new document is already present elsewhere?"
+    """
+
+    new_tokens = _tokenize_for_similarity(new_text)
+    existing_tokens = _tokenize_for_similarity(existing_text)
+
+    new_set = _shingles(new_tokens)
+    existing_set = _shingles(existing_tokens)
+    if not new_set or not existing_set:
+        return 0.0, 0.0, 0.0
+
+    inter = len(new_set & existing_set)
+    union = len(new_set | existing_set)
+    jaccard = inter / union if union else 0.0
+    coverage_new = inter / len(new_set) if new_set else 0.0
+    coverage_existing = inter / len(existing_set) if existing_set else 0.0
+    return jaccard, coverage_new, coverage_existing
+
+
+def _iter_kb_markdown_files() -> list[Path]:
+    root = _kb_raw_root()
+    if not root.exists():
+        return []
+
+    files: list[Path] = []
+    for p in root.rglob("*.md"):
+        name = p.name.lower()
+        if name in {"readme.md", "_template.md"}:
+            continue
+        if p.name.startswith("_"):
+            continue
+        files.append(p)
+
+    files.sort(key=lambda x: str(x).lower())
+    return files
+
+
+class SimilarityMatch(BaseModel):
+    kb_path: str
+    title: Optional[str] = None
+    jaccard: float = Field(..., ge=0.0, le=1.0)
+    coverage_new: float = Field(..., ge=0.0, le=1.0)
+    coverage_existing: float = Field(..., ge=0.0, le=1.0)
+
+
+class SimilarityResponse(BaseModel):
+    suggestion_id: str
+    matches: list[SimilarityMatch]
+
+
+class SimilarityCheckRequest(BaseModel):
+    document: str
+
+
+class SimilarityCheckResponse(BaseModel):
+    matches: list[SimilarityMatch]
+
+
+class KbStatsResponse(BaseModel):
+    total: int
+    by_category: dict[str, int]
+
+
+class KbDocumentResponse(BaseModel):
+    id: str
+    kb_path: str
+    title: str
+    author: str
+    date: str
+    category: str
+    content: str
+
+
+def _read_text_best_effort(path: Path, *, max_chars: int = 300_000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) > max_chars:
+        return text[:max_chars]
+    return text
+
+
 class ReviewRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     reviewer: Optional[str] = None
@@ -198,6 +320,13 @@ class SuggestionListItem(BaseModel):
     status: str
     created_at: str
     original_filename: Optional[str] = None
+
+
+class OriginalDocumentResponse(BaseModel):
+    suggestion_id: str
+    upload_id: str
+    original_filename: Optional[str] = None
+    text: str
 
 
 class ApplyRequest(BaseModel):
@@ -265,6 +394,280 @@ def get_suggestion(suggestion_id: str) -> SuggestionResponse:
         prompt_version=row["prompt_version"],
         suggestion_json=row["suggestion_json"],
         created_at=row["created_at"],
+    )
+
+
+@router.get("/suggestions/{suggestion_id}/similarity", response_model=SimilarityResponse)
+def get_suggestion_similarity(
+    suggestion_id: str,
+    limit: int = Query(5, ge=1, le=20),
+    min_coverage_new: float = Query(0.0, ge=0.0, le=1.0),
+    exclude_kb_path: Optional[str] = Query(
+        default=None,
+        description="Optional relative path under databases/knowledge_base/raw to exclude from matching.",
+    ),
+) -> SimilarityResponse:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT suggestion_id, suggestion_json
+            FROM suggestions
+            WHERE suggestion_id = ?
+            """,
+            (suggestion_id,),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+
+    suggestion_json = row["suggestion_json"] or ""
+    suggestion_front, suggestion_body = _split_front_matter(suggestion_json)
+    suggestion_title = suggestion_front.get("title") if isinstance(suggestion_front, dict) else None
+
+    new_text = (str(suggestion_title) + "\n\n" if suggestion_title else "") + (suggestion_body or "")
+    new_tokens = _tokenize_for_similarity(new_text)
+    new_set = _shingles(new_tokens)
+
+    kb_root = _kb_raw_root()
+    kb_files = _iter_kb_markdown_files()
+    if exclude_kb_path:
+        try:
+            excluded_full = _resolve_kb_path(exclude_kb_path)
+        except Exception:
+            raise HTTPException(status_code=400, detail="exclude_kb_path is invalid")
+        kb_files = [p for p in kb_files if p.resolve() != excluded_full.resolve()]
+
+    if not new_set or not kb_files:
+        return SimilarityResponse(suggestion_id=suggestion_id, matches=[])
+
+    matches: list[SimilarityMatch] = []
+    for p in kb_files:
+        try:
+            existing_raw = _read_text_best_effort(p)
+        except OSError:
+            continue
+
+        front, body = _split_front_matter(existing_raw)
+        title = None
+        if isinstance(front, dict):
+            maybe_title = front.get("title") or front.get("id")
+            if isinstance(maybe_title, str) and maybe_title.strip():
+                title = maybe_title.strip()
+
+        existing_text = (title + "\n\n" if title else "") + (body or "")
+        existing_tokens = _tokenize_for_similarity(existing_text)
+        existing_set = _shingles(existing_tokens)
+        if not existing_set:
+            continue
+
+        inter = len(new_set & existing_set)
+        if inter == 0:
+            continue
+
+        union = len(new_set | existing_set)
+        jaccard = inter / union if union else 0.0
+        coverage_new = inter / len(new_set) if new_set else 0.0
+        coverage_existing = inter / len(existing_set) if existing_set else 0.0
+
+        if coverage_new < min_coverage_new:
+            continue
+
+        rel = p.resolve().relative_to(kb_root.resolve())
+        matches.append(
+            SimilarityMatch(
+                kb_path=rel.as_posix(),
+                title=title,
+                jaccard=jaccard,
+                coverage_new=coverage_new,
+                coverage_existing=coverage_existing,
+            )
+        )
+
+    matches.sort(key=lambda m: (m.coverage_new, m.jaccard, m.kb_path), reverse=True)
+    return SimilarityResponse(suggestion_id=suggestion_id, matches=matches[:limit])
+
+
+@router.post("/similarity-check", response_model=SimilarityCheckResponse)
+def check_similarity_for_document(
+    request: SimilarityCheckRequest,
+    limit: int = Query(5, ge=1, le=20),
+    min_coverage_new: float = Query(0.0, ge=0.0, le=1.0),
+    exclude_kb_path: Optional[str] = Query(
+        default=None,
+        description="Optional relative path under databases/knowledge_base/raw to exclude from matching.",
+    ),
+) -> SimilarityCheckResponse:
+    """Check similarity for an arbitrary Markdown document (not necessarily stored as a suggestion).
+
+    This is useful for iterative editing in the UI: the user can revise a draft and re-check overlap
+    against the knowledge base without persisting the draft to the workflow DB.
+    """
+
+    doc = request.document or ""
+    front, body = _split_front_matter(doc)
+    title = front.get("title") if isinstance(front, dict) else None
+    new_text = (str(title) + "\n\n" if title else "") + (body or "")
+
+    new_tokens = _tokenize_for_similarity(new_text)
+    new_set = _shingles(new_tokens)
+
+    kb_root = _kb_raw_root()
+    kb_files = _iter_kb_markdown_files()
+    if exclude_kb_path:
+        try:
+            excluded_full = _resolve_kb_path(exclude_kb_path)
+        except Exception:
+            raise HTTPException(status_code=400, detail="exclude_kb_path is invalid")
+        kb_files = [p for p in kb_files if p.resolve() != excluded_full.resolve()]
+
+    if not new_set or not kb_files:
+        return SimilarityCheckResponse(matches=[])
+
+    matches: list[SimilarityMatch] = []
+    for p in kb_files:
+        try:
+            existing_raw = _read_text_best_effort(p)
+        except OSError:
+            continue
+
+        existing_front, existing_body = _split_front_matter(existing_raw)
+        existing_title = None
+        if isinstance(existing_front, dict):
+            maybe_title = existing_front.get("title") or existing_front.get("id")
+            if isinstance(maybe_title, str) and maybe_title.strip():
+                existing_title = maybe_title.strip()
+
+        existing_text = (existing_title + "\n\n" if existing_title else "") + (existing_body or "")
+        existing_tokens = _tokenize_for_similarity(existing_text)
+        existing_set = _shingles(existing_tokens)
+        if not existing_set:
+            continue
+
+        inter = len(new_set & existing_set)
+        if inter == 0:
+            continue
+
+        union = len(new_set | existing_set)
+        jaccard = inter / union if union else 0.0
+        coverage_new = inter / len(new_set) if new_set else 0.0
+        coverage_existing = inter / len(existing_set) if existing_set else 0.0
+
+        if coverage_new < min_coverage_new:
+            continue
+
+        rel = p.resolve().relative_to(kb_root.resolve())
+        matches.append(
+            SimilarityMatch(
+                kb_path=rel.as_posix(),
+                title=existing_title,
+                jaccard=jaccard,
+                coverage_new=coverage_new,
+                coverage_existing=coverage_existing,
+            )
+        )
+
+    matches.sort(key=lambda m: (m.coverage_new, m.jaccard, m.kb_path), reverse=True)
+    return SimilarityCheckResponse(matches=matches[:limit])
+
+
+@router.get("/kb/stats", response_model=KbStatsResponse)
+def get_kb_stats() -> KbStatsResponse:
+    total, by_cat = kb_stats()
+    return KbStatsResponse(total=total, by_category=by_cat)
+
+
+@router.get("/kb/document", response_model=KbDocumentResponse)
+def get_kb_document(kb_path: str = Query(..., description="Relative path under databases/knowledge_base/raw (e.g. 'procedures/pump-a.md').")) -> KbDocumentResponse:
+    try:
+        doc = get_kb_doc(kb_path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="kb_path is invalid")
+    except OSError:
+        raise HTTPException(status_code=404, detail="KB document not found")
+
+    return KbDocumentResponse(
+        id=doc.kb_path,
+        kb_path=doc.kb_path,
+        title=doc.title,
+        author=doc.author,
+        date=doc.date,
+        category=doc.category,
+        content=doc.content,
+    )
+
+
+@router.get("/suggestions/{suggestion_id}/original", response_model=OriginalDocumentResponse)
+def get_suggestion_original(suggestion_id: str) -> OriginalDocumentResponse:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT s.suggestion_id, s.upload_id, u.original_filename, n.text
+            FROM suggestions s
+            LEFT JOIN uploads u ON u.upload_id = s.upload_id
+            LEFT JOIN normalized_documents n ON n.upload_id = s.upload_id
+            WHERE s.suggestion_id = ?
+            ORDER BY n.created_at DESC
+            LIMIT 1
+            """,
+            (suggestion_id,),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+
+    text = row["text"]
+    if text is None:
+        raise HTTPException(status_code=404, detail="Original content not found")
+
+    return OriginalDocumentResponse(
+        suggestion_id=row["suggestion_id"],
+        upload_id=row["upload_id"],
+        original_filename=row["original_filename"],
+        text=text,
+    )
+
+
+@router.get("/suggestions/{suggestion_id}/file")
+def get_suggestion_file(suggestion_id: str) -> FileResponse:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT s.suggestion_id, s.upload_id, u.original_filename, u.content_type, u.stored_path
+            FROM suggestions s
+            LEFT JOIN uploads u ON u.upload_id = s.upload_id
+            WHERE s.suggestion_id = ?
+            """,
+            (suggestion_id,),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+
+    stored_path = row["stored_path"]
+    if not stored_path:
+        raise HTTPException(status_code=404, detail="Original file not found")
+
+    repo_root = Path(_repo_root_from_here())
+    uploads_root = (repo_root / "databases" / "data" / "uploads").resolve()
+
+    file_path = Path(stored_path)
+    if not file_path.is_absolute():
+        file_path = repo_root / file_path
+    file_path = file_path.resolve()
+
+    if uploads_root not in file_path.parents:
+        raise HTTPException(status_code=400, detail="Invalid stored file path")
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Original file missing on disk")
+
+    original_filename = row["original_filename"] or file_path.name
+    content_type = row["content_type"] or "application/octet-stream"
+
+    return FileResponse(
+        path=str(file_path),
+        media_type=content_type,
+        filename=original_filename,
+        headers={"Content-Disposition": f'inline; filename="{original_filename}"'},
     )
 
 

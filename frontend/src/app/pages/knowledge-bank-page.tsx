@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Sidebar } from "@/app/components/sidebar";
 import { Send, Sparkles, FileText, ExternalLink, User, Plus, MessageSquare, Filter } from "lucide-react";
+import { documentService } from "@/services";
+import { getAuthPermissionErrorMessage } from "@/utils/auth-errors";
 
 interface Source {
   id: string;
@@ -28,8 +30,14 @@ interface ChatSession {
 export function KnowledgeBankPage() {
   const [chatMessage, setChatMessage] = useState("");
   const [selectedDocument, setSelectedDocument] = useState<Source | null>(null);
+  const [selectedDocumentContent, setSelectedDocumentContent] = useState<string>("");
+  const [selectedDocumentLoading, setSelectedDocumentLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [currentSessionId, setCurrentSessionId] = useState("1");
+  const [chatSending, setChatSending] = useState(false);
+
+  const [kbTotalCount, setKbTotalCount] = useState<number>(0);
+  const [kbCountsByCategory, setKbCountsByCategory] = useState<Record<string, number>>({});
   
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([
     {
@@ -52,62 +60,57 @@ export function KnowledgeBankPage() {
 
   const categories = ["All", "Sikkerhet", "Vedlikehold", "Prosesser", "Miljø", "Kvalitet"];
 
-  const allDocuments: Source[] = [
-    {
-      id: "1",
-      title: "Prosedyre for elektrolyse-vedlikehold",
-      author: "Erik Berg",
-      date: "15. jan 2026",
-      category: "Vedlikehold",
-    },
-    {
-      id: "2",
-      title: "Sikkerhetsprosedyrer smelteverk",
-      author: "System",
-      date: "12. jan 2026",
-      category: "Sikkerhet",
-    },
-    {
-      id: "3",
-      title: "Kvalitetskontroll raffinering Q4 2025",
-      author: "Maria Hansen",
-      date: "11. jan 2026",
-      category: "Prosesser",
-    },
-    {
-      id: "4",
-      title: "Vedlikeholdsrutiner for filtreringssystem",
-      author: "Johan Olsen",
-      date: "10. jan 2026",
-      category: "Vedlikehold",
-    },
-    {
-      id: "5",
-      title: "Miljørapport Q1 2026",
-      author: "Anne Berg",
-      date: "9. jan 2026",
-      category: "Miljø",
-    },
-    {
-      id: "6",
-      title: "HMS-prosedyre 2026-01",
-      author: "Sikkerhet Team",
-      date: "8. jan 2026",
-      category: "Sikkerhet",
-    },
-    {
-      id: "7",
-      title: "Prosessoptimalisering Q4 2025",
-      author: "Teknikk Team",
-      date: "7. jan 2026",
-      category: "Prosesser",
-    },
-  ];
+  const filteredCount = useMemo(() => {
+    if (selectedCategory === "All") return kbTotalCount;
+    return kbCountsByCategory[selectedCategory] ?? 0;
+  }, [kbCountsByCategory, kbTotalCount, selectedCategory]);
 
-  const getFilteredDocuments = () => {
-    if (selectedCategory === "All") return allDocuments;
-    return allDocuments.filter(doc => doc.category === selectedCategory);
-  };
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const stats = await documentService.getKnowledgeBankStats();
+        if (cancelled) return;
+        setKbTotalCount(stats.total || 0);
+        setKbCountsByCategory(stats.by_category || {});
+      } catch (e) {
+        if (cancelled) return;
+        console.error("Failed to load KB stats:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDocument) {
+      setSelectedDocumentContent("");
+      setSelectedDocumentLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSelectedDocumentLoading(true);
+    void (async () => {
+      try {
+        const doc = await documentService.getKnowledgeBankDocument(selectedDocument.id);
+        if (cancelled) return;
+        setSelectedDocumentContent(doc.content || "");
+      } catch (e) {
+        if (cancelled) return;
+        console.error("Failed to load KB document:", e);
+        setSelectedDocumentContent(`Klarte ikke å hente dokumentet. ${getAuthPermissionErrorMessage(e)}`);
+      } finally {
+        if (cancelled) return;
+        setSelectedDocumentLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocument]);
 
   const handleNewChat = () => {
     const newSession: ChatSession = {
@@ -146,7 +149,7 @@ export function KnowledgeBankPage() {
   };
 
   const handleSendMessage = () => {
-    if (!chatMessage.trim()) return;
+    if (!chatMessage.trim() || chatSending) return;
 
     const userMessage = chatMessage;
     setChatMessage("");
@@ -170,46 +173,51 @@ export function KnowledgeBankPage() {
       return session;
     }));
 
-    // Simulate AI response with category-filtered sources
-    setTimeout(() => {
-      const filteredDocs = getFilteredDocuments();
-      
-      const responses = [
-        {
-          message: selectedCategory === "All" || selectedCategory === "Vedlikehold" 
-            ? "Ifølge prosedyren for elektrolyse-vedlikehold skal temperaturen holdes mellom 1250-1350°C under normal drift. Dette er kritisk for å opprettholde optimal effektivitet og sikkerhet. Prosedyren anbefaler også daglige kontroller av elektrodene og månedlige inspeksjoner av kjølesystemet."
-            : "Basert på dokumentene i denne kategorien, kan jeg hjelpe deg med spesifikk informasjon. Vennligst still et mer detaljert spørsmål.",
-          sources: filteredDocs.slice(0, 2),
-        },
-        {
-          message: selectedCategory === "All" || selectedCategory === "Sikkerhet"
-            ? "Basert på sikkerhetsprosedyrene for smelteverket, må all personell bruke fullt verneutstyr inkludert: hjelm, vernebriller, hørselvern, vernehansker og ildfast arbeidstøy. Før oppstart av smelteovn skal det alltid gjennomføres en sikkerhetsbriefing med alle involverte."
-            : "Basert på dokumentene i denne kategorien, kan jeg hjelpe deg med spesifikk informasjon. Vennligst still et mer detaljert spørsmål.",
-          sources: filteredDocs.slice(0, 2),
-        },
-        {
-          message: selectedCategory === "All" || selectedCategory === "Prosesser"
-            ? "Kvalitetskontrollrapporten for Q4 2025 viser en forbedring på 8.3% i produktrenheten sammenlignet med Q3. De viktigste faktorene som bidro til denne forbedringen var: optimalisert filtreringsprosess, bedre råvarekvalitet, og implementering av nye kvalitetskontrollrutiner."
-            : "Basert på dokumentene i denne kategorien, kan jeg hjelpe deg med spesifikk informasjon. Vennligst still et mer detaljert spørsmål.",
-          sources: filteredDocs.slice(0, 2),
-        },
-      ];
+    setChatSending(true);
 
-      const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+    void (async () => {
+      try {
+        const session = chatSessions.find((s) => s.id === currentSessionId);
+        const history = (session?.messages || []).slice(-8).map((m) => ({ role: m.role, message: m.message }));
 
-      const aiMessage: ChatMessage = {
-        role: "bot",
-        message: randomResponse.message,
-        timestamp: new Date().toISOString(),
-        sources: randomResponse.sources,
-      };
+        const res = await documentService.askKnowledgeBank({
+          message: userMessage,
+          category: selectedCategory === "All" ? undefined : selectedCategory,
+          history,
+        });
 
-      setChatSessions(prev => prev.map(session => 
-        session.id === currentSessionId 
-          ? { ...session, messages: [...session.messages, aiMessage] }
-          : session
-      ));
-    }, 1000);
+        const aiMessage: ChatMessage = {
+          role: "bot",
+          message: res.answer || "Jeg fikk ikke et svar akkurat nå.",
+          timestamp: new Date().toISOString(),
+          sources: (res.sources || []) as Source[],
+        };
+
+        setChatSessions((prev) =>
+          prev.map((sessionItem) =>
+            sessionItem.id === currentSessionId
+              ? { ...sessionItem, messages: [...sessionItem.messages, aiMessage] }
+              : sessionItem,
+          ),
+        );
+      } catch (e) {
+        console.error("Knowledge chat failed:", e);
+        const aiMessage: ChatMessage = {
+          role: "bot",
+          message: `Jeg fikk ikke kontakt med KI akkurat nå. ${getAuthPermissionErrorMessage(e)}`,
+          timestamp: new Date().toISOString(),
+        };
+        setChatSessions((prev) =>
+          prev.map((sessionItem) =>
+            sessionItem.id === currentSessionId
+              ? { ...sessionItem, messages: [...sessionItem.messages, aiMessage] }
+              : sessionItem,
+          ),
+        );
+      } finally {
+        setChatSending(false);
+      }
+    })();
   };
 
   return (
@@ -300,7 +308,7 @@ export function KnowledgeBankPage() {
                         {selectedCategory}
                       </span>
                       <span className="text-xs text-[#000000]/60">
-                        ({getFilteredDocuments().length} dokumenter)
+                        ({filteredCount} dokumenter)
                       </span>
                     </div>
                   </div>
@@ -408,7 +416,7 @@ export function KnowledgeBankPage() {
                     />
                     <button
                       onClick={handleSendMessage}
-                      disabled={!chatMessage.trim()}
+                      disabled={!chatMessage.trim() || chatSending}
                       className="px-5 py-3 bg-[#00AFAA] hover:bg-[#00AFAA]/90 disabled:bg-[#00AFAA]/50 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-semibold"
                     >
                       <Send className="w-5 h-5" />
@@ -461,28 +469,14 @@ export function KnowledgeBankPage() {
                 </div>
 
                 <h3 className="text-xl text-[#000000] font-semibold mb-4">Dokumentinnhold</h3>
-                
-                <p className="text-base text-[#000000] leading-relaxed mb-4">
-                  Dette er et eksempeldokument fra Glencore Nikkelverk kunnskapsbank. 
-                  I en produksjonsapplikasjon ville det fulle dokumentinnholdet blitt vist her, 
-                  inkludert all teknisk informasjon, prosedyrer, og relevante data.
-                </p>
 
-                <h4 className="text-lg text-[#000000] font-semibold mb-3 mt-6">Hovedpunkter:</h4>
-                <ul className="space-y-2 mb-6">
-                  <li className="text-base text-[#000000]">Detaljerte sikkerhetsprosedyrer og retningslinjer</li>
-                  <li className="text-base text-[#000000]">Tekniske spesifikasjoner og parametere</li>
-                  <li className="text-base text-[#000000]">Vedlikeholdsrutiner og tidsplaner</li>
-                  <li className="text-base text-[#000000]">Kvalitetskontrollkriterier</li>
-                  <li className="text-base text-[#000000]">Relevante referanser til andre dokumenter</li>
-                </ul>
-
-                <h4 className="text-lg text-[#000000] font-semibold mb-3">Relatert informasjon:</h4>
-                <p className="text-base text-[#000000] leading-relaxed">
-                  Dette dokumentet er en del av Glencore Nikkelverks omfattende kunnskapsbank 
-                  som inneholder operative prosedyrer, sikkerhetsinformasjon, og teknisk dokumentasjon 
-                  for alle aspekter av produksjonsanlegget.
-                </p>
+                {selectedDocumentLoading ? (
+                  <p className="text-base text-[#000000] leading-relaxed mb-4">Henter dokument...</p>
+                ) : (
+                  <pre className="whitespace-pre-wrap text-sm text-[#000000] leading-relaxed bg-white border border-[#000000]/10 rounded-lg p-4">
+                    {selectedDocumentContent || ""}
+                  </pre>
+                )}
               </div>
             </div>
           </div>

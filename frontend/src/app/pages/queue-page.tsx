@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Sidebar } from "@/app/components/sidebar";
 import { MessageSquare, FileText, Clock, ChevronRight, X, Send, XCircle, Trash2 } from "lucide-react";
 import { useDocuments } from "@/app/context/documents-context";
 import { useToast } from "@/app/context/toast-context";
+import { documentService } from "@/services";
 import { getAuthPermissionErrorMessage } from "@/utils/auth-errors";
 
 interface ChatMessage {
@@ -10,8 +11,16 @@ interface ChatMessage {
   content: string;
 }
 
+type SimilarityMatch = {
+  kb_path: string;
+  title?: string | null;
+  jaccard: number;
+  coverage_new: number;
+  coverage_existing: number;
+};
+
 export function QueuePage() {
-  const { getPendingDocuments, getRejectedDocuments, approveDocument, rejectDocument, deleteDocument } = useDocuments();
+  const { getPendingDocuments, getRejectedDocuments, loadOriginalContent, approveDocument, rejectDocument, deleteDocument } = useDocuments();
   const { showToast } = useToast();
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -20,10 +29,19 @@ export function QueuePage() {
   const [viewRejectedDoc, setViewRejectedDoc] = useState<string | null>(null);
   const [viewingOriginal, setViewingOriginal] = useState(false);
 
+  const [similarityLoading, setSimilarityLoading] = useState(false);
+  const [similarityError, setSimilarityError] = useState<string | null>(null);
+  const [similarityMatches, setSimilarityMatches] = useState<SimilarityMatch[] | null>(null);
+
+  const [chatSending, setChatSending] = useState(false);
+
   const documents = getPendingDocuments();
   const rejectedDocuments = getRejectedDocuments();
   const selectedDocument = documents.find(doc => doc.id === selectedDocId);
   const viewedRejectedDocument = rejectedDocuments.find(doc => doc.id === viewRejectedDoc);
+
+  const selectedIsPdf = !!selectedDocument?.fileName && selectedDocument.fileName.toLowerCase().endsWith(".pdf");
+  const viewedRejectedIsPdf = !!viewedRejectedDocument?.fileName && viewedRejectedDocument.fileName.toLowerCase().endsWith(".pdf");
 
   const handleDocumentSelect = (docId: string) => {
     const doc = documents.find(d => d.id === docId);
@@ -31,6 +49,61 @@ export function QueuePage() {
     setRevisedContent(doc?.revisedContent || "");
     setChatMessages([]);
     setViewingOriginal(false);
+    setSimilarityMatches(null);
+    setSimilarityError(null);
+  };
+
+  useEffect(() => {
+    if (!selectedDocId) {
+      setSimilarityMatches(null);
+      setSimilarityError(null);
+      setSimilarityLoading(false);
+      return;
+    }
+
+    if (selectedDocument?.isProcessing) {
+      setSimilarityMatches(null);
+      setSimilarityError(null);
+      setSimilarityLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSimilarityLoading(true);
+    setSimilarityError(null);
+
+    void (async () => {
+      try {
+        const res = await documentService.getSuggestionSimilarity(selectedDocId, { limit: 5, minCoverageNew: 0.05 });
+        if (cancelled) return;
+        setSimilarityMatches(res.matches || []);
+      } catch (e) {
+        if (cancelled) return;
+        console.error("Failed to load similarity:", e);
+        setSimilarityError(`Klarte ikke å sjekke likhet. ${getAuthPermissionErrorMessage(e)}`);
+        setSimilarityMatches([]);
+      } finally {
+        if (cancelled) return;
+        setSimilarityLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocId, selectedDocument?.isProcessing]);
+
+  const handleShowOriginal = async () => {
+    if (!selectedDocId) return;
+    try {
+      if (!selectedIsPdf) {
+        await loadOriginalContent(selectedDocId);
+      }
+      setViewingOriginal(true);
+    } catch (error) {
+      console.error("Failed to load original content:", error);
+      showToast(`Klarte ikke å hente originalt dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
+    }
   };
 
   const handleApprove = async () => {
@@ -84,52 +157,75 @@ export function QueuePage() {
   };
 
   const handleSendMessage = () => {
-    if (!inputMessage.trim()) return;
+    const msg = inputMessage.trim();
+    if (!msg || chatSending) return;
+    if (!selectedDocId) return;
 
-    const userMessage: ChatMessage = {
-      role: "user",
-      content: inputMessage,
-    };
+    const wantsSimilarityCheck = /\b(sjekk|check|kontroller)\b/i.test(msg) && /\b(likhet|overlapp)\b/i.test(msg);
 
+    const userMessage: ChatMessage = { role: "user", content: msg };
     setChatMessages(prev => [...prev, userMessage]);
-
-    // Simulate AI response
-    setTimeout(() => {
-      const aiResponse: ChatMessage = {
-        role: "ai",
-        content: getAIResponse(inputMessage),
-      };
-      setChatMessages(prev => [...prev, aiResponse]);
-
-      // Update revised content based on the request
-      if (inputMessage.toLowerCase().includes("temperatur")) {
-        setRevisedContent(prev => prev.replace("1250-1350°C", "1300-1400°C"));
-      } else if (inputMessage.toLowerCase().includes("intervall")) {
-        setRevisedContent(prev => prev.replace("hver 4. måned", "hver 3. måned"));
-      } else if (inputMessage.toLowerCase().includes("sikkerhet")) {
-        setRevisedContent(prev => prev + "\n\n9. Ekstra Sikkerhetstiltak\n\nVed høyrisiko-operasjoner skal det alltid være minimum to personer til stede. Alle ansatte må ha fullført HMS-opplæring nivå 2.");
-      }
-    }, 1000);
-
     setInputMessage("");
-  };
+    setChatSending(true);
 
-  const getAIResponse = (message: string): string => {
-    const lowerMessage = message.toLowerCase();
+    void (async () => {
+      try {
+        if (wantsSimilarityCheck) {
+          const res = await documentService.checkSimilarityForDocument(revisedContent, { limit: 5, minCoverageNew: 0.05 });
+          const matches = res.matches || [];
+          setSimilarityMatches(matches);
+          setSimilarityError(null);
 
-    if (lowerMessage.includes("temperatur")) {
-      return "Jeg har oppdatert temperaturverdiene til 1300-1400°C basert på de nyeste prosessdataene fra Q1 2026. Dette gir bedre energieffektivitet og produktkvalitet.";
-    } else if (lowerMessage.includes("intervall")) {
-      return "Jeg har endret vedlikeholdsintervallet til hver 3. måned. Dette er i tråd med anbefalinger fra utstyrsprodusentene og vil redusere risikoen for uventede stopp.";
-    } else if (lowerMessage.includes("sikkerhet")) {
-      return "Jeg har lagt til et nytt avsnitt om ekstra sikkerhetstiltak for høyrisiko-operasjoner. Dette inkluderer krav om minimum to personer og HMS-opplæring nivå 2.";
-    } else if (lowerMessage.includes("forkort") || lowerMessage.includes("kortere")) {
-      return "Jeg kan forkorte dokumentet ved å fjerne unødvendige detaljer og fokusere på de viktigste punktene. Skal jeg gjøre det?";
-    } else if (lowerMessage.includes("utvid") || lowerMessage.includes("mer detalj")) {
-      return "Jeg kan utvide dokumentet med mer detaljert informasjon om prosedyrene, inkludert trinn-for-trinn instruksjoner og illustrasjoner. Ønsker du det?";
-    } else {
-      return "Jeg forstår din forespørsel. Jeg kan hjelpe deg med å:\n• Endre temperaturverdier\n• Justere vedlikeholdsintervaller\n• Legge til sikkerhetsprosedyrer\n• Forkorte eller utvide innholdet\n\nHva ønsker du at jeg skal fokusere på?";
-    }
+          if (matches.length === 0) {
+            setChatMessages(prev => [...prev, { role: "ai", content: "Jeg fant ingen tydelig overlapp mot kunnskapsbanken i denne versjonen." }]);
+            return;
+          }
+
+          const top = matches.slice(0, 3).map((m) => {
+            const pct = Math.round((m.coverage_new || 0) * 100);
+            const title = (m.title || m.kb_path).trim();
+            return `- ${pct}%: ${title}`;
+          });
+          setChatMessages(prev => [
+            ...prev,
+            {
+              role: "ai",
+              content: `Her er topp-treffene mot kunnskapsbanken (andel av ditt dokument som overlapper):\n${top.join("\n")}`,
+            },
+          ]);
+          return;
+        }
+
+        const res = await documentService.reviseDocument({
+          document: revisedContent,
+          instruction: msg,
+        });
+
+        setChatMessages(prev => [...prev, { role: "ai", content: res.message || "Oppdatert dokumentet." }]);
+        if (res.updated_document) {
+          setRevisedContent(res.updated_document);
+
+          // Refresh similarity for the updated draft (without requiring a re-select of the suggestion).
+          try {
+            setSimilarityLoading(true);
+            const sim = await documentService.checkSimilarityForDocument(res.updated_document, { limit: 5, minCoverageNew: 0.05 });
+            setSimilarityMatches(sim.matches || []);
+            setSimilarityError(null);
+          } catch (e) {
+            console.error("Failed to refresh similarity:", e);
+            setSimilarityError(`Klarte ikke å sjekke likhet. ${getAuthPermissionErrorMessage(e)}`);
+          } finally {
+            setSimilarityLoading(false);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to send chat message:", error);
+        showToast(`Feil ved sending til AI. ${getAuthPermissionErrorMessage(error)}`, "error");
+        setChatMessages(prev => [...prev, { role: "ai", content: "Jeg fikk ikke kontakt med AI akkurat nå." }]);
+      } finally {
+        setChatSending(false);
+      }
+    })();
   };
 
   return (
@@ -220,7 +316,14 @@ export function QueuePage() {
                         <div
                           key={doc.id}
                           className="border border-[#82131E]/20 bg-[#82131E]/5 rounded-lg p-6 hover:bg-[#82131E]/10 transition-colors cursor-pointer flex items-center gap-4 group"
-                           onClick={() => setViewRejectedDoc(doc.id)}
+                           onClick={() => void (async () => {
+                             try {
+                               await loadOriginalContent(doc.id);
+                             } catch (error) {
+                               console.error("Failed to load original content:", error);
+                             }
+                             setViewRejectedDoc(doc.id);
+                           })()}
                         >
                           <div className="flex-shrink-0">
                             <div className="w-12 h-12 rounded-lg bg-[#82131E]/10 flex items-center justify-center">
@@ -267,7 +370,7 @@ export function QueuePage() {
                 </h2>
                 {!viewingOriginal && (
                   <button
-                    onClick={() => setViewingOriginal(true)}
+                    onClick={() => void handleShowOriginal()}
                     className="flex items-center gap-2 px-4 py-2 bg-white border border-[#00AFAA] text-[#00AFAA] rounded-md hover:bg-[#E6F7F7] transition-colors text-sm"
                   >
                     <FileText className="w-4 h-4" />
@@ -297,11 +400,19 @@ export function QueuePage() {
              {viewingOriginal ? (
                <div className="flex-1 overflow-hidden flex flex-col min-h-0">
                  <div className="flex-1 overflow-auto p-8 bg-white">
-                  <div className="max-w-4xl mx-auto">
+                  <div className={selectedIsPdf ? "max-w-5xl mx-auto" : "max-w-4xl mx-auto"}>
                     <h3 className="text-xl text-[#000000] font-semibold mb-8">{selectedDocument.title}</h3>
-                    <div className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
-                      {selectedDocument.originalContent}
-                    </div>
+                    {selectedIsPdf ? (
+                      <iframe
+                        title={selectedDocument.fileName}
+                        src={documentService.getOriginalFileUrl(selectedDocId)}
+                        className="w-full h-[520px] border border-[#000000]/10 rounded"
+                      />
+                    ) : (
+                      <div className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
+                        {selectedDocument.originalContent}
+                      </div>
+                    )}
                    </div>
                 </div>
                 
@@ -336,6 +447,32 @@ export function QueuePage() {
                     </div>
  
                     <div className="flex-1 overflow-auto p-4 bg-[#F5F5F5] space-y-3">
+                      <div className="p-4 bg-white rounded-lg border border-[#000000]/10">
+                        <p className="text-xs font-semibold text-[#000000] mb-2">Likhet mot kunnskapsbanken</p>
+                        {selectedDocument?.isProcessing ? (
+                          <p className="text-xs text-[#000000]/70">AI behandler dokumentet – likhet sjekkes etterpå.</p>
+                        ) : similarityLoading ? (
+                          <p className="text-xs text-[#000000]/70">Sjekker overlapp...</p>
+                        ) : similarityError ? (
+                          <p className="text-xs text-[#82131E]">{similarityError}</p>
+                        ) : (similarityMatches && similarityMatches.length > 0) ? (
+                          <div className="space-y-2">
+                            {similarityMatches.map((m) => (
+                              <div key={m.kb_path} className="text-xs text-[#000000]">
+                                <div className="flex items-baseline justify-between gap-3">
+                                  <p className="font-semibold truncate">{m.title || m.kb_path}</p>
+                                  <p className="text-[#00AFAA] font-semibold flex-shrink-0">{Math.round((m.coverage_new || 0) * 100)}%</p>
+                                </div>
+                                <p className="text-[#000000]/60 truncate">{m.kb_path}</p>
+                              </div>
+                            ))}
+                            <p className="text-[11px] text-[#000000]/60 pt-1">Prosent = hvor mye av det nye dokumentet som overlapper.</p>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-[#000000]/70">Ingen tydelig overlapp funnet.</p>
+                        )}
+                      </div>
+
                       {chatMessages.length === 0 && (
                         <div className="p-6 bg-white rounded-lg border border-[#000000]/10 mt-4">
                           <p className="text-sm text-[#000000] leading-relaxed">
@@ -384,7 +521,7 @@ export function QueuePage() {
                         />
                         <button
                           onClick={handleSendMessage}
-                          disabled={!inputMessage.trim()}
+                          disabled={!inputMessage.trim() || chatSending}
                           className="px-4 py-2 bg-[#00AFAA] hover:bg-[#00AFAA]/90 disabled:bg-[#000000]/10 disabled:cursor-not-allowed text-white rounded-md transition-colors"
                         >
                           <Send className="w-4 h-4" />
@@ -480,9 +617,17 @@ export function QueuePage() {
 
               <h3 className="text-lg text-[#000000] font-semibold mb-4">Original innhold</h3>
               <div className="bg-white border border-[#000000]/10 rounded-lg p-6">
-                <p className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
-                  {viewedRejectedDocument.originalContent}
-                </p>
+                {viewedRejectedIsPdf ? (
+                  <iframe
+                    title={viewedRejectedDocument.fileName}
+                    src={documentService.getOriginalFileUrl(viewedRejectedDocument.id)}
+                    className="w-full h-[420px] border border-[#000000]/10 rounded"
+                  />
+                ) : (
+                  <p className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
+                    {viewedRejectedDocument.originalContent}
+                  </p>
+                )}
                </div>
             </div>
  

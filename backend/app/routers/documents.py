@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import mimetypes
 import re
 import uuid
 from pathlib import Path
@@ -149,6 +150,11 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
     safe_filename = _sanitize_filename(original_filename)
     content_sha256 = _sha256_bytes(content)
 
+    guessed_type, _ = mimetypes.guess_type(original_filename)
+    content_type = file.content_type
+    if not content_type or content_type == "application/octet-stream":
+        content_type = guessed_type or "application/octet-stream"
+
     repo_root = get_repo_root()
     uploads_root = repo_root / "databases" / "data" / "uploads" / upload_id
     uploads_root.mkdir(parents=True, exist_ok=True)
@@ -175,7 +181,7 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
                 (
                     upload_id,
                     original_filename,
-                    file.content_type,
+                    content_type,
                     len(content),
                     content_sha256,
                     str(stored_path.as_posix()),

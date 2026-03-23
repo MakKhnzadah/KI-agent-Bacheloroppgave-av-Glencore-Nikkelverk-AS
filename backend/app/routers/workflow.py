@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import mimetypes
 import re
 import threading
 import uuid
@@ -661,7 +662,10 @@ def get_suggestion_file(suggestion_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Original file missing on disk")
 
     original_filename = row["original_filename"] or file_path.name
-    content_type = row["content_type"] or "application/octet-stream"
+    content_type = row["content_type"] or ""
+    if not content_type or content_type == "application/octet-stream":
+        guessed_type, _ = mimetypes.guess_type(original_filename)
+        content_type = guessed_type or "application/octet-stream"
 
     return FileResponse(
         path=str(file_path),

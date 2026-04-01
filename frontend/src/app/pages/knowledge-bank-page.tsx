@@ -10,6 +10,7 @@ interface Source {
   author: string;
   date: string;
   category: string;
+  retrievalMethod?: "vector" | "lexical";
 }
 
 interface ChatMessage {
@@ -378,6 +379,14 @@ export function KnowledgeBankPage() {
                                           <span className="text-[#00AFAA]">
                                             {source.category}
                                           </span>
+                                          {source.retrievalMethod && (
+                                            <>
+                                              <span>•</span>
+                                              <span className="px-1.5 py-0.5 rounded bg-[#000000]/10 text-[#333333] uppercase tracking-wide text-[10px]">
+                                                {source.retrievalMethod === "vector" ? "Vector" : "Leksikalsk"}
+                                              </span>
+                                            </>
+                                          )}
                                         </div>
                                       </div>
                                       <button

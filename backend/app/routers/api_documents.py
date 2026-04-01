@@ -446,67 +446,17 @@ def approve_document(
     payload: Optional[DocumentDecisionRequest] = Body(default=None),
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> DocumentOut:
-    reviewer = _require_expert_user(authorization)
-    comment = payload.comment if payload else None
-
-    with get_connection() as conn:
-        existing = conn.execute(
-            "SELECT id, title, status FROM documents WHERE id = ?",
-            (document_id,),
-        ).fetchone()
-
-        if existing is None:
-            raise _api_error(status.HTTP_404_NOT_FOUND, "NOT_FOUND", "Document not found")
-
-        if existing["status"] != "pending":
-            raise _api_error(
-                status.HTTP_409_CONFLICT,
-                "CONFLICT",
-                "Only pending documents can be approved",
-                details={"currentStatus": existing["status"]},
-            )
-
-        conn.execute(
-            """
-            UPDATE documents
-            SET status = 'approved',
-                approved_content = revised_content,
-                updated_at = datetime('now')
-            WHERE id = ?
-            """,
-            (document_id,),
-        )
-
-        _insert_audit(
-            conn,
-            document_id=document_id,
-            action="approved",
-            from_status="pending",
-            to_status="approved",
-            performed_by=reviewer,
-            comment=comment,
-        )
-        _insert_activity(
-            conn,
-            activity_type="document_approved",
-            title="Nytt dokument godkjent",
-            description=existing["title"],
-            user=reviewer,
-            time_label="nå",
-            document_id=document_id,
-        )
-
-        row = conn.execute(
-            """
-            SELECT id, title, file_name, category, status, uploaded_by, uploaded_at,
-                   original_content, revised_content, approved_content
-            FROM documents
-            WHERE id = ?
-            """,
-            (document_id,),
-        ).fetchone()
-
-    return _row_to_document(row)
+    raise _api_error(
+        status.HTTP_410_GONE,
+        "DEPRECATED_ENDPOINT",
+        "This endpoint is deprecated. Use workflow suggestion review/apply endpoints instead.",
+        details={
+            "replacement": {
+                "review": "POST /workflow/suggestions/{suggestion_id}/review",
+                "apply": "POST /workflow/suggestions/{suggestion_id}/apply",
+            }
+        },
+    )
 
 
 @router.patch("/{document_id}/reject", response_model=DocumentOut)
@@ -515,67 +465,16 @@ def reject_document(
     payload: Optional[DocumentDecisionRequest] = Body(default=None),
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> DocumentOut:
-    reviewer = _require_expert_user(authorization)
-    comment = payload.comment if payload else None
-
-    with get_connection() as conn:
-        existing = conn.execute(
-            "SELECT id, title, status FROM documents WHERE id = ?",
-            (document_id,),
-        ).fetchone()
-
-        if existing is None:
-            raise _api_error(status.HTTP_404_NOT_FOUND, "NOT_FOUND", "Document not found")
-
-        if existing["status"] != "pending":
-            raise _api_error(
-                status.HTTP_409_CONFLICT,
-                "CONFLICT",
-                "Only pending documents can be rejected",
-                details={"currentStatus": existing["status"]},
-            )
-
-        conn.execute(
-            """
-            UPDATE documents
-            SET status = 'rejected',
-                approved_content = NULL,
-                updated_at = datetime('now')
-            WHERE id = ?
-            """,
-            (document_id,),
-        )
-
-        _insert_audit(
-            conn,
-            document_id=document_id,
-            action="rejected",
-            from_status="pending",
-            to_status="rejected",
-            performed_by=reviewer,
-            comment=comment,
-        )
-        _insert_activity(
-            conn,
-            activity_type="document_rejected",
-            title="Dokument avvist",
-            description=existing["title"],
-            user=reviewer,
-            time_label="nå",
-            document_id=document_id,
-        )
-
-        row = conn.execute(
-            """
-            SELECT id, title, file_name, category, status, uploaded_by, uploaded_at,
-                   original_content, revised_content, approved_content
-            FROM documents
-            WHERE id = ?
-            """,
-            (document_id,),
-        ).fetchone()
-
-    return _row_to_document(row)
+    raise _api_error(
+        status.HTTP_410_GONE,
+        "DEPRECATED_ENDPOINT",
+        "This endpoint is deprecated. Use workflow suggestion review endpoint instead.",
+        details={
+            "replacement": {
+                "review": "POST /workflow/suggestions/{suggestion_id}/review",
+            }
+        },
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

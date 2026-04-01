@@ -1,5 +1,7 @@
 import re
+import logging
 from typing import Literal, Optional
+from pathlib import Path
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -9,6 +11,7 @@ from app.ai_services.ollama_provider import OllamaProvider
 from app.agents.structuring_agents import STRUCTURING_AGENT_PROMPT
 
 router = APIRouter(prefix="/agent", tags=["AI Agent"])
+logger = logging.getLogger(__name__)
 
 class DocumentRequest(BaseModel):
     text: str
@@ -41,6 +44,7 @@ class KnowledgeSource(BaseModel):
     author: str
     date: str
     category: str
+    retrievalMethod: Literal["vector", "lexical"] = "lexical"
 
 
 class KnowledgeChatResponse(BaseModel):
@@ -226,6 +230,104 @@ def _sanitize_updated_document(doc: str, instruction: str) -> str:
 
     return text
 
+
+def _kb_rel_path_from_vector_meta(meta: dict) -> Optional[str]:
+    raw_path = str((meta or {}).get("path") or "").strip()
+    if not raw_path:
+        return None
+
+    try:
+        from app.vector_store.config import _repo_root_from_here
+
+        repo_root = Path(_repo_root_from_here())
+        kb_root = (repo_root / "databases" / "knowledge_base" / "raw").resolve()
+        full = Path(raw_path)
+        if not full.is_absolute():
+            full = (repo_root / full).resolve()
+        else:
+            full = full.resolve()
+        return full.relative_to(kb_root).as_posix()
+    except Exception:
+        return None
+
+
+def _vector_retrieve(msg: str, category: Optional[str], *, limit: int = 3) -> tuple[list[KnowledgeSource], list[str], Optional[str]]:
+    try:
+        from app.vector_store.chroma_store import ChromaVectorStore
+        from app.vector_store.config import load_vector_store_config
+        from app.vector_store.ollama_embeddings import OllamaEmbeddingClient
+        from app.kb.kb_reader import get_kb_doc
+    except Exception as exc:
+        return [], [], f"Vector search unavailable: {exc}"
+
+    try:
+        cfg = load_vector_store_config()
+        store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
+        embedder = OllamaEmbeddingClient(
+            base_url=cfg.ollama_base_url,
+            model=cfg.ollama_embed_model,
+            timeout_s=cfg.ollama_embed_timeout_s,
+        )
+
+        query_embedding = embedder.embed_text(msg)
+        res = store.query(query_embedding=query_embedding, n_results=max(3, min(limit * 3, 12)))
+        docs = res.get("documents", [[]])[0]
+        metas = res.get("metadatas", [[]])[0]
+
+        wanted_category = (category or "").strip()
+        seen: set[str] = set()
+        sources: list[KnowledgeSource] = []
+        excerpts: list[str] = []
+
+        for i, chunk in enumerate(docs):
+            if len(sources) >= limit:
+                break
+
+            meta = metas[i] if i < len(metas) and isinstance(metas[i], dict) else {}
+            kb_rel_path = _kb_rel_path_from_vector_meta(meta)
+            if not kb_rel_path or kb_rel_path in seen:
+                continue
+
+            try:
+                kb_doc = get_kb_doc(kb_rel_path)
+            except Exception:
+                continue
+
+            if wanted_category and wanted_category != "All" and kb_doc.category != wanted_category:
+                continue
+
+            seen.add(kb_rel_path)
+            sources.append(
+                KnowledgeSource(
+                    id=kb_doc.kb_path,
+                    title=kb_doc.title,
+                    author=kb_doc.author,
+                    date=kb_doc.date,
+                    category=kb_doc.category,
+                    retrievalMethod="vector",
+                )
+            )
+
+            excerpt = (chunk or "").strip()
+            excerpt = re.sub(r"\n{3,}", "\n\n", excerpt)
+            excerpt = excerpt[:1500]
+            excerpts.append(
+                "\n".join(
+                    [
+                        f"KILDE: {kb_doc.title}",
+                        f"PATH: {kb_doc.kb_path}",
+                        f"KATEGORI: {kb_doc.category}",
+                        "METODE: vector",
+                        "UTDRAG:",
+                        excerpt,
+                    ]
+                )
+            )
+
+        return sources, excerpts, None
+    except Exception as exc:
+        return [], [], f"Vector retrieval failed: {exc}"
+
 @router.post("/process")
 def process_document(request: DocumentRequest):
     result = agent.process_document(STRUCTURING_AGENT_PROMPT, request.text)
@@ -266,35 +368,47 @@ def knowledge_chat(request: KnowledgeChatRequest) -> KnowledgeChatResponse:
     if not msg:
         return KnowledgeChatResponse(answer="Skriv et spørsmål, så kan jeg prøve å finne svaret i kunnskapsbanken.", sources=[])
 
-    docs = search_kb(msg, category=request.category, limit=3)
-    sources: list[KnowledgeSource] = [
-        KnowledgeSource(
-            id=d.kb_path,
-            title=d.title,
-            author=d.author,
-            date=d.date,
-            category=d.category,
-        )
-        for d in docs
-    ]
+    vector_sources, vector_excerpts, vector_error = _vector_retrieve(msg, request.category, limit=3)
 
+    sources: list[KnowledgeSource] = []
     excerpts: list[str] = []
-    for d in docs:
-        front, body = split_front_matter(d.content)
-        excerpt = (body or "").strip()
-        excerpt = re.sub(r"\n{3,}", "\n\n", excerpt)
-        excerpt = excerpt[:1500]
-        excerpts.append(
-            "\n".join(
-                [
-                    f"KILDE: {d.title}",
-                    f"PATH: {d.kb_path}",
-                    f"KATEGORI: {d.category}",
-                    "UTDRAG:",
-                    excerpt,
-                ]
+    retrieval_mode = "vector"
+
+    if vector_sources:
+        sources = vector_sources
+        excerpts = vector_excerpts
+    else:
+        docs = search_kb(msg, category=request.category, limit=3)
+        sources = [
+            KnowledgeSource(
+                id=d.kb_path,
+                title=d.title,
+                author=d.author,
+                date=d.date,
+                category=d.category,
+                retrievalMethod="lexical",
             )
-        )
+            for d in docs
+        ]
+        retrieval_mode = "lexical"
+
+        for d in docs:
+            front, body = split_front_matter(d.content)
+            excerpt = (body or "").strip()
+            excerpt = re.sub(r"\n{3,}", "\n\n", excerpt)
+            excerpt = excerpt[:1500]
+            excerpts.append(
+                "\n".join(
+                    [
+                        f"KILDE: {d.title}",
+                        f"PATH: {d.kb_path}",
+                        f"KATEGORI: {d.category}",
+                        "METODE: lexical",
+                        "UTDRAG:",
+                        excerpt,
+                    ]
+                )
+            )
 
     history_lines: list[str] = []
     if request.history:
@@ -307,16 +421,23 @@ def knowledge_chat(request: KnowledgeChatRequest) -> KnowledgeChatResponse:
 
     context_block = "\n\n---\n\n".join(excerpts) if excerpts else "(Ingen kilder funnet.)"
     history_block = "\n".join(history_lines) if history_lines else "(Ingen historikk.)"
+    retrieval_block = f"Hentemetode: {retrieval_mode}" + (f" (vector-feil: {vector_error})" if vector_error and retrieval_mode == "lexical" else "")
 
     prompt = (
         f"{_KB_CHAT_PROMPT}\n\n"
+        f"{retrieval_block}\n\n"
         f"SAMTALEHISTORIKK:\n{history_block}\n\n"
         f"BRUKERSPØRSMÅL:\n{msg}\n\n"
         f"KILDER (markdown-utdrag):\n{context_block}\n\n"
         "Svar nå."
     )
 
-    answer = llm.generate(prompt).strip()
+    try:
+        answer = llm.generate(prompt).strip()
+    except Exception as exc:
+        logger.exception("Knowledge chat generation failed")
+        answer = "Jeg fikk ikke kontakt med språkmodellen akkurat nå. Prøv igjen."
+
     if not answer:
         answer = "Jeg fikk ikke et svar fra modellen akkurat nå. Prøv igjen."
 

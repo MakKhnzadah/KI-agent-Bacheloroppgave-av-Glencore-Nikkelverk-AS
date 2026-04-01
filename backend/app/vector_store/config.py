@@ -9,6 +9,7 @@ from pathlib import Path
 class VectorStoreConfig:
     ollama_base_url: str
     ollama_embed_model: str
+    ollama_embed_timeout_s: float
     chroma_collection: str
     persist_dir: Path
 
@@ -25,6 +26,7 @@ def load_vector_store_config() -> VectorStoreConfig:
     return VectorStoreConfig(
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_embed_model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
+        ollama_embed_timeout_s=float(os.getenv("OLLAMA_EMBED_TIMEOUT_S", "180")),
         chroma_collection=os.getenv("CHROMA_COLLECTION", "kb_chunks"),
         persist_dir=Path(os.getenv("VECTOR_STORE_DIR", str(persist_default))),
     )

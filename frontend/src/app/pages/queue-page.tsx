@@ -19,6 +19,13 @@ type SimilarityMatch = {
   coverage_existing: number;
 };
 
+type ReindexStatus = {
+  state: string;
+  last_error?: string | null;
+  last_indexed_files?: number | null;
+  last_indexed_chunks?: number | null;
+};
+
 export function QueuePage() {
   const { getPendingDocuments, getRejectedDocuments, loadOriginalContent, approveDocument, rejectDocument, deleteDocument } = useDocuments();
   const { showToast } = useToast();
@@ -32,6 +39,7 @@ export function QueuePage() {
   const [similarityLoading, setSimilarityLoading] = useState(false);
   const [similarityError, setSimilarityError] = useState<string | null>(null);
   const [similarityMatches, setSimilarityMatches] = useState<SimilarityMatch[] | null>(null);
+  const [reindexStatus, setReindexStatus] = useState<ReindexStatus>({ state: "unknown" });
 
   const [chatSending, setChatSending] = useState(false);
 
@@ -93,6 +101,62 @@ export function QueuePage() {
     };
   }, [selectedDocId, selectedDocument?.isProcessing]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadReindexStatus = async () => {
+      try {
+        const status = await documentService.getKnowledgeBankReindexStatus();
+        if (cancelled) return;
+        setReindexStatus({
+          state: status.state || "unknown",
+          last_error: status.last_error,
+          last_indexed_files: status.last_indexed_files,
+          last_indexed_chunks: status.last_indexed_chunks,
+        });
+      } catch (error) {
+        if (cancelled) return;
+        console.error("Failed to load reindex status:", error);
+        setReindexStatus({ state: "unavailable", last_error: getAuthPermissionErrorMessage(error) });
+      }
+    };
+
+    void loadReindexStatus();
+    const id = window.setInterval(() => {
+      void loadReindexStatus();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  const normalizedReindexState = (reindexStatus.state || "unknown").toLowerCase();
+  const reindexStatusLabel =
+    normalizedReindexState === "completed"
+      ? "Fullfort"
+      : normalizedReindexState === "in_progress"
+        ? "Pågår"
+        : normalizedReindexState === "scheduled"
+          ? "Planlagt"
+          : normalizedReindexState === "failed"
+            ? "Feilet"
+            : normalizedReindexState === "skipped"
+              ? "Hoppet over"
+              : normalizedReindexState === "idle"
+                ? "Inaktiv"
+                : "Ukjent";
+
+  const reindexStatusToneClass =
+    normalizedReindexState === "completed"
+      ? "bg-[#0B6A46]/10 text-[#0B6A46]"
+      : normalizedReindexState === "in_progress" || normalizedReindexState === "scheduled"
+        ? "bg-[#005B7F]/10 text-[#005B7F]"
+        : normalizedReindexState === "failed" || normalizedReindexState === "skipped" || normalizedReindexState === "unavailable"
+          ? "bg-[#B3232F]/10 text-[#7C0D15]"
+          : "bg-[#000000]/10 text-[#333333]";
+
   const handleShowOriginal = async () => {
     if (!selectedDocId) return;
     try {
@@ -110,7 +174,30 @@ export function QueuePage() {
     if (selectedDocId) {
       try {
         await approveDocument(selectedDocId);
-        showToast("Dokument godkjent. AI-revidert versjon er lagret i kunnskapsbanken.", "success");
+        showToast("Dokument godkjent. AI-revidert versjon er lagret i kunnskapsbanken. Indeksering pågår.", "success");
+
+        void (async () => {
+          try {
+            const status = await documentService.waitForKnowledgeBankReindexCompletion({ timeoutMs: 45000, intervalMs: 2000 });
+            const state = (status.state || "").toLowerCase();
+
+            if (state === "completed") {
+              const files = status.last_indexed_files ?? 0;
+              const chunks = status.last_indexed_chunks ?? 0;
+              showToast(`Indeksering fullført (${files} filer, ${chunks} tekstbiter).`, "success");
+              return;
+            }
+
+            if (state === "failed" || state === "skipped" || state === "timeout") {
+              const reason = (status.last_error || "Ukjent årsak").trim();
+              showToast(`Dokumentet ble lagret, men indeksering ble ikke fullført: ${reason}`, "error", 9000);
+            }
+          } catch (error) {
+            console.error("Failed to fetch reindex status:", error);
+            showToast(`Dokumentet ble lagret, men vi klarte ikke å hente indekseringsstatus. ${getAuthPermissionErrorMessage(error)}`, "error", 9000);
+          }
+        })();
+
         setSelectedDocId(null);
         setChatMessages([]);
         setRevisedContent("");
@@ -242,7 +329,7 @@ export function QueuePage() {
             <div className="bg-white border border-white">
               <div className="p-6">
                 {/* Header with Stats */}
-                <div className="flex items-start justify-between mb-6">
+                <div className="flex items-start justify-between mb-6 gap-4">
                   <div>
                     <h2 className="text-xl text-[#000000] font-semibold mb-2">Velg et forslag</h2>
                     <p className="text-sm text-[#000000]">
@@ -260,6 +347,23 @@ export function QueuePage() {
                         <Clock className="w-5 h-5 text-[#82131E]" />
                       </div>
                     </div>
+                  </div>
+
+                  <div className="bg-white border border-[#000000]/10 rounded-lg p-4 min-w-[260px]">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <p className="text-sm font-semibold text-[#000000]">KB indeksering</p>
+                      <span className={`px-2 py-0.5 rounded text-xs font-semibold ${reindexStatusToneClass}`}>
+                        {reindexStatusLabel}
+                      </span>
+                    </div>
+                    {normalizedReindexState === "completed" ? (
+                      <p className="text-xs text-[#000000]/70">
+                        {reindexStatus.last_indexed_files ?? 0} filer, {reindexStatus.last_indexed_chunks ?? 0} tekstbiter
+                      </p>
+                    ) : null}
+                    {normalizedReindexState === "failed" || normalizedReindexState === "skipped" || normalizedReindexState === "unavailable" ? (
+                      <p className="text-xs text-[#7C0D15] line-clamp-2">{(reindexStatus.last_error || "Ukjent feil").trim()}</p>
+                    ) : null}
                   </div>
                 </div>
  

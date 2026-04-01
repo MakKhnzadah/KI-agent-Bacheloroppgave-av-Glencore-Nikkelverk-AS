@@ -6,10 +6,11 @@ import mimetypes
 import re
 import threading
 import uuid
+from datetime import datetime, timezone
 from typing import Literal, Optional
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import yaml
@@ -25,9 +26,117 @@ router = APIRouter(prefix="/workflow", tags=["workflow"])
 
 logger = logging.getLogger(__name__)
 _reindex_lock = threading.Lock()
+_reindex_status_lock = threading.Lock()
+_reindex_status: dict[str, object | None] = {
+    "state": "idle",
+    "current_run_id": None,
+    "last_completed_run_id": None,
+    "last_reason": None,
+    "last_started_at": None,
+    "last_finished_at": None,
+    "last_error": None,
+    "last_indexed_files": None,
+    "last_indexed_chunks": None,
+}
 
 
-def _reindex_kb_to_chroma() -> None:
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _set_reindex_status(**updates: object | None) -> None:
+    with _reindex_status_lock:
+        _reindex_status.update(updates)
+
+
+def _mark_reindex_scheduled(reason: str) -> str:
+    run_id = str(uuid.uuid4())
+    _set_reindex_status(
+        state="scheduled",
+        current_run_id=run_id,
+        last_reason=reason,
+        last_error=None,
+        last_started_at=None,
+        last_finished_at=None,
+        last_indexed_files=None,
+        last_indexed_chunks=None,
+    )
+    return run_id
+
+
+def _api_error(status_code: int, code: str, message: str, details: Optional[dict] = None) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "error": {
+                "code": code,
+                "message": message,
+                "details": details or {},
+            }
+        },
+    )
+
+
+def _extract_bearer_token(authorization: Optional[str]) -> str:
+    if not authorization:
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Missing Authorization header")
+
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid Authorization header")
+
+    return parts[1].strip()
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _require_expert_user(authorization: Optional[str]) -> str:
+    token = _extract_bearer_token(authorization)
+    token_hash = _hash_token(token)
+    now = datetime.now(timezone.utc)
+
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT s.id, s.access_expires_at, u.username, u.role, u.is_active
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.access_token_hash = ?
+              AND s.revoked_at IS NULL
+            """,
+            (token_hash,),
+        ).fetchone()
+
+    if row is None:
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid token")
+
+    if int(row["is_active"] or 0) != 1:
+        raise _api_error(status.HTTP_403_FORBIDDEN, "FORBIDDEN", "User is inactive")
+
+    if _parse_iso(row["access_expires_at"]) <= now:
+        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Token expired")
+
+    if row["role"] != "expert":
+        raise _api_error(
+            status.HTTP_403_FORBIDDEN,
+            "FORBIDDEN",
+            "Insufficient role",
+            details={"requiredRole": "expert", "currentRole": row["role"]},
+        )
+
+    return row["username"]
+
+
+def _reindex_kb_to_chroma(run_id: Optional[str] = None) -> None:
     """Re-index the KB raw markdown into Chroma.
 
     Runs best-effort; errors are logged and do not affect the apply response.
@@ -35,20 +144,46 @@ def _reindex_kb_to_chroma() -> None:
 
     if not _reindex_lock.acquire(blocking=False):
         logger.info("KB re-index already in progress; skipping duplicate request")
+        _set_reindex_status(
+            state="in_progress",
+            last_error=None,
+        )
         return
+
+    active_run_id = run_id or str(uuid.uuid4())
+
+    _set_reindex_status(
+        state="in_progress",
+        current_run_id=active_run_id,
+        last_started_at=_utc_now_iso(),
+        last_finished_at=None,
+        last_error=None,
+        last_indexed_files=None,
+        last_indexed_chunks=None,
+    )
 
     try:
         try:
             from app.vector_store.chroma_store import ChromaVectorStore
             from app.vector_store.kb_indexer import index_kb
             from app.vector_store.ollama_embeddings import OllamaEmbeddingClient
-        except Exception:
+        except Exception as exc:
             logger.info("Vector search disabled (chromadb not installed); skipping KB re-index")
+            _set_reindex_status(
+                state="skipped",
+                last_completed_run_id=active_run_id,
+                last_finished_at=_utc_now_iso(),
+                last_error=f"Vector search dependencies are unavailable: {exc}",
+            )
             return
 
         cfg = load_vector_store_config()
         store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
-        embedder = OllamaEmbeddingClient(base_url=cfg.ollama_base_url, model=cfg.ollama_embed_model)
+        embedder = OllamaEmbeddingClient(
+            base_url=cfg.ollama_base_url,
+            model=cfg.ollama_embed_model,
+            timeout_s=cfg.ollama_embed_timeout_s,
+        )
 
         try:
             stats = index_kb(store=store, embedder=embedder)
@@ -58,8 +193,22 @@ def _reindex_kb_to_chroma() -> None:
                 stats.get("chunks"),
                 str(cfg.persist_dir),
             )
-        except Exception:
+            _set_reindex_status(
+                state="completed",
+                last_completed_run_id=active_run_id,
+                last_finished_at=_utc_now_iso(),
+                last_error=None,
+                last_indexed_files=stats.get("files"),
+                last_indexed_chunks=stats.get("chunks"),
+            )
+        except Exception as exc:
             logger.exception("KB re-index failed")
+            _set_reindex_status(
+                state="failed",
+                last_completed_run_id=active_run_id,
+                last_finished_at=_utc_now_iso(),
+                last_error=f"KB re-index failed: {exc}",
+            )
     finally:
         _reindex_lock.release()
 
@@ -283,6 +432,18 @@ class KbDocumentResponse(BaseModel):
     content: str
 
 
+class ReindexStatusResponse(BaseModel):
+    state: str
+    current_run_id: Optional[str] = None
+    last_completed_run_id: Optional[str] = None
+    last_reason: Optional[str] = None
+    last_started_at: Optional[str] = None
+    last_finished_at: Optional[str] = None
+    last_error: Optional[str] = None
+    last_indexed_files: Optional[int] = None
+    last_indexed_chunks: Optional[int] = None
+
+
 def _read_text_best_effort(path: Path, *, max_chars: int = 300_000) -> str:
     try:
         text = path.read_text(encoding="utf-8")
@@ -370,6 +531,7 @@ class ApplyResponse(BaseModel):
     change_id: str
     status: Literal["applied"]
     reindex: Literal["scheduled"]
+    reindex_run_id: str
 
 
 @router.get("/suggestions/{suggestion_id}", response_model=SuggestionResponse)
@@ -577,6 +739,13 @@ def get_kb_stats() -> KbStatsResponse:
     return KbStatsResponse(total=total, by_category=by_cat)
 
 
+@router.get("/kb/reindex-status", response_model=ReindexStatusResponse)
+def get_kb_reindex_status() -> ReindexStatusResponse:
+    with _reindex_status_lock:
+        snapshot = dict(_reindex_status)
+    return ReindexStatusResponse(**snapshot)
+
+
 @router.get("/kb/document", response_model=KbDocumentResponse)
 def get_kb_document(kb_path: str = Query(..., description="Relative path under databases/knowledge_base/raw (e.g. 'procedures/pump-a.md').")) -> KbDocumentResponse:
     try:
@@ -676,7 +845,12 @@ def get_suggestion_file(suggestion_id: str) -> FileResponse:
 
 
 @router.post("/suggestions/{suggestion_id}/review", response_model=ReviewResponse)
-def review_suggestion(suggestion_id: str, request: ReviewRequest) -> ReviewResponse:
+def review_suggestion(
+    suggestion_id: str,
+    request: ReviewRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> ReviewResponse:
+    reviewer = _require_expert_user(authorization)
     review_id = str(uuid.uuid4())
 
     with get_connection() as conn:
@@ -700,7 +874,7 @@ def review_suggestion(suggestion_id: str, request: ReviewRequest) -> ReviewRespo
             INSERT INTO reviews (review_id, suggestion_id, reviewer, decision, comment)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (review_id, suggestion_id, request.reviewer, request.decision, request.comment),
+            (review_id, suggestion_id, reviewer, request.decision, request.comment),
         )
 
         conn.execute(
@@ -716,8 +890,14 @@ def review_suggestion(suggestion_id: str, request: ReviewRequest) -> ReviewRespo
 
 
 @router.post("/suggestions/{suggestion_id}/apply", response_model=ApplyResponse)
-def apply_suggestion(suggestion_id: str, request: ApplyRequest, background_tasks: BackgroundTasks) -> ApplyResponse:
+def apply_suggestion(
+    suggestion_id: str,
+    request: ApplyRequest,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> ApplyResponse:
     """Apply an approved suggestion to the KB (write Markdown file + record audit row)."""
+    _require_expert_user(authorization)
 
     with get_connection() as conn:
         row = conn.execute(
@@ -780,7 +960,8 @@ def apply_suggestion(suggestion_id: str, request: ApplyRequest, background_tasks
         )
 
     # Automatically refresh the vector index after applying KB changes.
-    background_tasks.add_task(_reindex_kb_to_chroma)
+    reindex_run_id = _mark_reindex_scheduled(reason="workflow.apply_suggestion")
+    background_tasks.add_task(_reindex_kb_to_chroma, reindex_run_id)
 
     return ApplyResponse(
         suggestion_id=suggestion_id,
@@ -788,6 +969,7 @@ def apply_suggestion(suggestion_id: str, request: ApplyRequest, background_tasks
         change_id=change_id,
         status="applied",
         reindex="scheduled",
+        reindex_run_id=reindex_run_id,
     )
 
 

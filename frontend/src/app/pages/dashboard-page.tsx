@@ -5,9 +5,10 @@ import { useDocuments } from "@/app/context/documents-context";
 
 export function DashboardPage() {
   const navigate = useNavigate();
-  const { getPendingDocuments } = useDocuments();
+  const { documents, getPendingDocuments } = useDocuments();
   
   const pendingCount = getPendingDocuments().length;
+  const totalDocumentsCount = documents.length;
   
   const stats = [
     {
@@ -32,7 +33,7 @@ export function DashboardPage() {
     },
     {
       label: "Totalt Dokumenter",
-      value: "1,247",
+      value: totalDocumentsCount.toLocaleString("nb-NO"),
       subtitle: "",
       icon: FileText,
       iconColor: "text-[#764484]",

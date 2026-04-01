@@ -83,6 +83,7 @@ type KnowledgeSource = {
   author: string;
   date: string;
   category: string;
+  retrievalMethod?: "vector" | "lexical";
 };
 
 type KnowledgeChatTurn = {
@@ -114,6 +115,18 @@ type KbDocumentResponse = {
   date: string;
   category: string;
   content: string;
+};
+
+type KbReindexStatusResponse = {
+  state: string;
+  current_run_id?: string | null;
+  last_completed_run_id?: string | null;
+  last_reason?: string | null;
+  last_started_at?: string | null;
+  last_finished_at?: string | null;
+  last_error?: string | null;
+  last_indexed_files?: number | null;
+  last_indexed_chunks?: number | null;
 };
 
 function normalizeStatus(status: string): Document["status"] {
@@ -267,6 +280,33 @@ class DocumentService {
   async getKnowledgeBankDocument(kbPath: string): Promise<KbDocumentResponse> {
     const qs = new URLSearchParams({ kb_path: kbPath });
     return apiClient.getJson<KbDocumentResponse>(`/workflow/kb/document?${qs.toString()}`);
+  }
+
+  async getKnowledgeBankReindexStatus(): Promise<KbReindexStatusResponse> {
+    return apiClient.getJson<KbReindexStatusResponse>("/workflow/kb/reindex-status");
+  }
+
+  async waitForKnowledgeBankReindexCompletion(options?: {
+    timeoutMs?: number;
+    intervalMs?: number;
+  }): Promise<KbReindexStatusResponse> {
+    const timeoutMs = options?.timeoutMs ?? 45000;
+    const intervalMs = options?.intervalMs ?? 2000;
+    const terminal = new Set(["completed", "failed", "skipped"]);
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const status = await this.getKnowledgeBankReindexStatus();
+      if (terminal.has((status.state || "").toLowerCase())) {
+        return status;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    }
+
+    return {
+      state: "timeout",
+      last_error: "Timed out while waiting for KB reindex status",
+    };
   }
 
   async getAllDocuments(): Promise<Document[]> {

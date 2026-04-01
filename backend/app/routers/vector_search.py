@@ -41,7 +41,11 @@ def index_knowledge_base() -> dict:
     ChromaVectorStore, index_kb, OllamaEmbeddingClient = _load_vector_deps()
     cfg = load_vector_store_config()
     store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
-    embedder = OllamaEmbeddingClient(base_url=cfg.ollama_base_url, model=cfg.ollama_embed_model)
+    embedder = OllamaEmbeddingClient(
+        base_url=cfg.ollama_base_url,
+        model=cfg.ollama_embed_model,
+        timeout_s=cfg.ollama_embed_timeout_s,
+    )
 
     try:
         stats = index_kb(store=store, embedder=embedder)
@@ -58,7 +62,11 @@ def search(q: str, k: int = 5) -> dict:
     ChromaVectorStore, _index_kb, OllamaEmbeddingClient = _load_vector_deps()
     cfg = load_vector_store_config()
     store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
-    embedder = OllamaEmbeddingClient(base_url=cfg.ollama_base_url, model=cfg.ollama_embed_model)
+    embedder = OllamaEmbeddingClient(
+        base_url=cfg.ollama_base_url,
+        model=cfg.ollama_embed_model,
+        timeout_s=cfg.ollama_embed_timeout_s,
+    )
 
     try:
         query_embedding = embedder.embed_text(q)

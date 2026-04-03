@@ -290,13 +290,15 @@ class DocumentService {
     timeoutMs?: number;
     intervalMs?: number;
   }): Promise<KbReindexStatusResponse> {
-    const timeoutMs = options?.timeoutMs ?? 45000;
+    const timeoutMs = options?.timeoutMs ?? 180000;
     const intervalMs = options?.intervalMs ?? 2000;
     const terminal = new Set(["completed", "failed", "skipped"]);
 
     const start = Date.now();
+    let lastStatus: KbReindexStatusResponse | null = null;
     while (Date.now() - start < timeoutMs) {
       const status = await this.getKnowledgeBankReindexStatus();
+      lastStatus = status;
       if (terminal.has((status.state || "").toLowerCase())) {
         return status;
       }
@@ -304,8 +306,9 @@ class DocumentService {
     }
 
     return {
+      ...(lastStatus ?? {}),
       state: "timeout",
-      last_error: "Timed out while waiting for KB reindex status",
+      last_error: `Indekseringen tar lengre tid enn forventet og fortsetter i bakgrunnen (timeout ${Math.round(timeoutMs / 1000)}s).`,
     };
   }
 

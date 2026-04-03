@@ -1,10 +1,44 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Sidebar } from "@/app/components/sidebar";
 import { MessageSquare, FileText, Clock, ChevronRight, X, Send, XCircle, Trash2 } from "lucide-react";
 import { useDocuments } from "@/app/context/documents-context";
 import { useToast } from "@/app/context/toast-context";
 import { documentService } from "@/services";
 import { getAuthPermissionErrorMessage } from "@/utils/auth-errors";
+import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+const MARKDOWN_COMPONENTS: Components = {
+  h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-semibold mb-4 mt-2">{children}</h1>,
+  h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-semibold mb-3 mt-5">{children}</h2>,
+  h3: ({ children }: { children?: ReactNode }) => <h3 className="text-base font-semibold mb-2 mt-4">{children}</h3>,
+  p: ({ children }: { children?: ReactNode }) => <p className="mb-3 whitespace-pre-wrap">{children}</p>,
+  ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 mb-3 space-y-1">{children}</ul>,
+  ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 mb-3 space-y-1">{children}</ol>,
+  li: ({ children }: { children?: ReactNode }) => <li className="whitespace-pre-wrap">{children}</li>,
+  blockquote: ({ children }: { children?: ReactNode }) => (
+    <blockquote className="border-l-4 border-[#000000]/10 pl-4 my-4 text-[#000000]/80">{children}</blockquote>
+  ),
+  code: ({ children }: { children?: ReactNode }) => (
+    <code className="px-1 py-0.5 rounded bg-[#000000]/5 font-mono text-[0.85em]">{children}</code>
+  ),
+  pre: ({ children }: { children?: ReactNode }) => (
+    <pre className="mb-4 overflow-x-auto rounded border border-[#000000]/10 bg-[#000000]/5 p-3 text-xs">{children}</pre>
+  ),
+  table: ({ children }: { children?: ReactNode }) => (
+    <div className="mb-4 overflow-x-auto">
+      <table className="w-full border-collapse text-xs">{children}</table>
+    </div>
+  ),
+  th: ({ children }: { children?: ReactNode }) => <th className="border border-[#000000]/10 bg-[#000000]/5 px-2 py-1 text-left">{children}</th>,
+  td: ({ children }: { children?: ReactNode }) => <td className="border border-[#000000]/10 px-2 py-1 align-top">{children}</td>,
+  a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="underline">
+      {children}
+    </a>
+  ),
+};
 
 interface ChatMessage {
   role: "user" | "ai";
@@ -25,6 +59,362 @@ type ReindexStatus = {
   last_indexed_files?: number | null;
   last_indexed_chunks?: number | null;
 };
+
+function stripYamlFrontMatter(markdown: string): string {
+  // Preview-only: suggestions are stored as "YAML front matter + Markdown body".
+  // Rendering the YAML as plain text makes long documents harder to read.
+  const raw = markdown || "";
+  // Normalize BOM + line endings so we can reliably detect --- blocks on Windows.
+  const text = raw.replace(/^\ufeff/, "").replace(/\r\n/g, "\n").replace(/^\s+/, "");
+  if (!text.startsWith("---\n")) return text;
+  const end = text.indexOf("\n---\n", 4);
+  if (end === -1) return text;
+  return text.slice(end + "\n---\n".length).replace(/^\n+/, "");
+}
+
+function looksLikeMarkdown(content: string): boolean {
+  const text = content.replace(/\r\n/g, "\n");
+  return (
+    /^#{1,6}\s+\S/m.test(text) ||
+    /^\s*([-*+]\s+\S|\d+\.\s+\S)/m.test(text) ||
+    /^>\s+\S/m.test(text) ||
+    /^```/m.test(text) ||
+    /\|/.test(text)
+  );
+}
+
+function looksLikeGluedText(content: string): boolean {
+  const text = (content || "").replace(/\r\n/g, "\n");
+  const sample = text.replace(/\s+/g, " ").trim();
+  if (sample.length < 400) return false;
+  const words = sample.split(" ").filter(Boolean);
+  if (words.length === 0) return false;
+  const avgLen = words.reduce((sum, w) => sum + w.length, 0) / words.length;
+  const longTokens = words.filter(w => w.length >= 40).length;
+  const spaceRatio = sample.split("").filter(ch => ch === " ").length / sample.length;
+  return longTokens >= 8 || (spaceRatio < 0.055 && avgLen > 11);
+}
+
+function looksLikeDocumentDraft(content: string): boolean {
+  const text = (content || "").replace(/\r\n/g, "\n").trim();
+  if (!text) return false;
+  if (text.startsWith("---\n")) return true;
+  if (/^#{1,6}\s+\S/m.test(text)) return true;
+  if (/^\d+(?:\.\d+)*\s+\S/m.test(text)) return true;
+  if (text.split("\n").length >= 14 && text.length >= 1200) return true;
+  return false;
+}
+
+function looksLikeChattyReply(content: string): boolean {
+  const text = (content || "").trim();
+  if (!text) return false;
+  if (/\b(i\s*['’]d\s+be\s+happy\s+to\s+help|before\s+we\s+begin|please\s+confirm|is\s+that\s+correct)\b/i.test(text)) return true;
+  if (/\b(før\s+vi\s+begynner|har\s+du\s+noen\s+preferanser|er\s+det\s+korrekt)\b/i.test(text)) return true;
+  const q = (text.match(/\?/g) || []).length;
+  if (q >= 2 && text.length < 2500) return true;
+  return false;
+}
+
+function normalizeExtractedText(content: string): string {
+  // Preview-only: help readability for PDF-extracted text artifacts.
+  let text = (content || "").replace(/\r\n/g, "\n");
+
+  // Fix common private-use glyph issues in URLs like "hps" -> "https".
+  text = text.replace(/h[\uE000-\uF8FF]ps:\/\//gi, "https://");
+  text = text.replace(/h[\uE000-\uF8FF]p:\/\//gi, "http://");
+  text = text.replace(/[\uE000-\uF8FF]/g, "");
+
+  // De-hyphenate common line-break hyphenation like "in- cluding".
+  text = text.replace(/(\w)-\s+(\w)/g, "$1$2");
+
+  // Add missing spaces after punctuation so sentence splitting works.
+  text = text.replace(/([.,;:!?])(\S)/g, "$1 $2");
+  text = text.replace(/(\))(\S)/g, "$1 $2");
+  text = text.replace(/(\S)(\()/g, "$1 $2");
+
+  // Collapse excessive spaces while keeping newlines (paragraph detection uses them).
+  text = text.replace(/[ \t\f\v]+/g, " ");
+  text = text.replace(/\n{3,}/g, "\n\n");
+  return text.trim();
+}
+
+function coercePlainTextToMarkdown(content: string): string {
+  // Preview-only: try to render common PDF/plain-text structures as readable Markdown.
+  const raw = (content || "").replace(/\r\n/g, "\n");
+  if (!raw.trim()) return "";
+
+  const stripDotLeadersAndPageNo = (s: string): { text: string; pageNo?: string } => {
+    // Typical TOC/LOF/LOT lines contain dot leaders and a trailing page number:
+    // "1.1 Background . . . 1" or "11 Qt Creator[25] . . . 17".
+    const noLeaders = s.replace(/(\s*\.(?:\s*\.)+\s*)/g, " ").replace(/\s{2,}/g, " ").trim();
+    const m = noLeaders.match(/^(.*?)(?:\s+(\d+|[ivxlcdm]{1,6}))\s*$/i);
+    if (!m) return { text: noLeaders };
+    const text = (m[1] || "").trim();
+    const pageNo = (m[2] || "").trim();
+    if (!text) return { text: noLeaders };
+    return { text, pageNo };
+  };
+
+  const isLikelyStandalonePageMarker = (line: string): boolean => {
+    if (/^page\s+\d+$/i.test(line)) return true;
+    // Roman numerals used as page markers in front matter.
+    if (/^[ivxlcdm]{1,6}$/i.test(line)) return true;
+    return false;
+  };
+
+  const normalizeDuplicateNumberedHeading = (line: string): string | null => {
+    // Common PDF artifact: "2 THEORY 2 Theory" or "1 INTRODUCTION 1 Introduction".
+    // Prefer the part that contains lowercase letters.
+    const m = line.match(/^\s*(\d+(?:\.\d+)*)\s+(.+?)\s+\1\s+(.+?)\s*$/);
+    if (!m) return null;
+    const numbering = m[1];
+    const partA = m[2].trim();
+    const partB = m[3].trim();
+    const pick = /[a-zæøå]/.test(partB) ? partB : partA;
+    return `${numbering} ${pick}`;
+  };
+
+  const lines = raw.split("\n");
+  const out: string[] = [];
+
+  const pushBlank = () => {
+    if (out.length === 0) return;
+    if (out[out.length - 1] !== "") out.push("");
+  };
+
+  let tocMode: "none" | "toc" | "lof" | "lot" = "none";
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const original = lines[i] ?? "";
+    let line = original.replace(/[ \t\f\v]+/g, " ").trim();
+    if (!line) {
+      // Keep at most one blank line.
+      if (out.length > 0 && out[out.length - 1] !== "") out.push("");
+      continue;
+    }
+
+    // Split cases like "Contents 1 Introduction 1" into two lines.
+    const combined = line.match(/^(contents|list of figures|list of tables|nomenclature)\s+(.+)$/i);
+    if (combined) {
+      const head = combined[1];
+      const rest = (combined[2] || "").trim();
+      if (rest) {
+        lines.splice(i + 1, 0, rest);
+      }
+      line = head;
+    }
+
+    // Drop standalone page markers.
+    if (isLikelyStandalonePageMarker(line)) {
+      continue;
+    }
+
+    // Section markers that often introduce structured index blocks.
+    if (/^contents$/i.test(line)) {
+      pushBlank();
+      out.push("## Contents");
+      pushBlank();
+      tocMode = "toc";
+      continue;
+    }
+    if (/^list of figures$/i.test(line)) {
+      pushBlank();
+      out.push("## List of Figures");
+      pushBlank();
+      tocMode = "lof";
+      continue;
+    }
+    if (/^list of tables$/i.test(line)) {
+      pushBlank();
+      out.push("## List of Tables");
+      pushBlank();
+      tocMode = "lot";
+      continue;
+    }
+
+    // TOC / List-of-* entries.
+    if (tocMode !== "none") {
+      // End the index block when we hit a new top-level chapter heading.
+      if (/^\d+\s+[A-Z][A-Z\s]{3,}$/i.test(line) && !/\s\d+$/i.test(line)) {
+        tocMode = "none";
+        // fall through to normal handling below
+      } else {
+        // Normalize dot leaders and strip trailing page markers.
+        const cleaned = stripDotLeadersAndPageNo(line);
+
+        // Contents: numbered outline entries.
+        const tocEntry = cleaned.text.match(/^(\d+(?:\.\d+)*)\s+(.+)$/);
+        if (tocEntry && tocMode === "toc") {
+          const numbering = tocEntry[1];
+          const title = tocEntry[2].trim();
+          const depth = numbering.split(".").length;
+          const indent = " ".repeat(Math.max(0, (depth - 1) * 2));
+          out.push(`${indent}- ${numbering} ${title}`);
+          continue;
+        }
+
+        // List of Figures/Tables: entries often look like "1 caption ... 14".
+        const listEntry = cleaned.text.match(/^(\d+)\s+(.+)$/);
+        if (listEntry && (tocMode === "lof" || tocMode === "lot")) {
+          const n = listEntry[1];
+          const caption = listEntry[2].trim();
+          const label = tocMode === "lof" ? "Figure" : "Table";
+          out.push(`- ${label} ${n}: ${caption}`);
+          continue;
+        }
+
+        // If we can't parse it, keep it as plain text to avoid losing information.
+        out.push(cleaned.text);
+        continue;
+      }
+    }
+
+    // Normalize duplicated headings like "2 THEORY 2 Theory".
+    const normalizedDupHeading = normalizeDuplicateNumberedHeading(line);
+    if (normalizedDupHeading) {
+      line = normalizedDupHeading;
+    }
+
+    // Convert bullet glyphs.
+    if (line.startsWith("• ") || line === "•") {
+      out.push(line === "•" ? "-" : `- ${line.slice(2).trim()}`);
+      continue;
+    }
+
+    // Figures/Tables.
+    const figOrTable = line.match(/^(figure|table)\s+(\d+)\s*:\s*(.+)$/i);
+    if (figOrTable) {
+      pushBlank();
+      const label = figOrTable[1][0].toUpperCase() + figOrTable[1].slice(1).toLowerCase();
+      out.push(`**${label} ${figOrTable[2]}:** ${figOrTable[3].trim()}`);
+      pushBlank();
+      continue;
+    }
+
+    // Numbered headings (e.g., "1 INTRODUCTION", "2.1 Project Control").
+    const numbered = line.match(/^(\d+(?:\.\d+)*)\s+(.+?)$/);
+    if (numbered) {
+      const numbering = numbered[1];
+      const title = numbered[2].trim();
+      // Avoid treating pure TOC lines like "1 Introduction 1" as headings.
+      // If it ends with a lone page number and has no punctuation, keep as plain text.
+      if (/\s(\d+|[ivxlcdm]{1,6})$/i.test(title) && !/[.:;!?]/.test(title)) {
+        const cleaned = stripDotLeadersAndPageNo(line);
+        out.push(cleaned.text);
+        continue;
+      }
+
+      const depth = numbering.split(".").length;
+      const level = Math.min(6, Math.max(2, 1 + depth)); // 1 -> ##, 1.1 -> ###, 1.1.1 -> ####
+      pushBlank();
+      out.push(`${"#".repeat(level)} ${numbering} ${title}`);
+      pushBlank();
+      continue;
+    }
+
+    // ALL CAPS headings (common in PDFs).
+    if (/^[A-Z][A-Z\s]{6,}$/.test(line) && line.length <= 80) {
+      pushBlank();
+      out.push(`## ${line}`);
+      pushBlank();
+      continue;
+    }
+
+    out.push(line);
+  }
+
+  // Clean up: collapse multiple blank lines.
+  const collapsed: string[] = [];
+  for (const l of out) {
+    if (l === "" && collapsed[collapsed.length - 1] === "") continue;
+    collapsed.push(l);
+  }
+
+  return collapsed.join("\n").trim();
+}
+
+function autoParagraphPlainText(content: string): string {
+  // Preview-only: many PDFs become a single huge paragraph after extraction.
+  // This tries to split into readable paragraphs without changing stored content.
+  const text = (content || "").replace(/\r\n/g, "\n").trim();
+  if (!text) return "";
+  if (/\n\n+/.test(text)) return text; // already has paragraphs
+
+  // Chunk by sentence-ish boundaries to create paragraphs.
+  const targetMin = 450;
+  const targetMax = 900;
+  const out: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const maxEnd = Math.min(i + targetMax, text.length);
+    const windowText = text.slice(i, maxEnd);
+
+    // Find last sentence boundary in the window.
+    let cut = -1;
+    for (let j = windowText.length - 1; j >= 0; j -= 1) {
+      const ch = windowText[j];
+      if (ch === "." || ch === "!" || ch === "?") {
+        // Prefer boundaries that are followed by whitespace.
+        const next = windowText[j + 1];
+        if (next === undefined || /\s/.test(next)) {
+          cut = j + 1;
+          break;
+        }
+      }
+    }
+
+    // If we didn't find a boundary, fall back to last space.
+    if (cut === -1) {
+      const space = windowText.lastIndexOf(" ");
+      cut = space > targetMin ? space : windowText.length;
+    }
+
+    // If cut is too small, just take a bigger chunk.
+    if (cut < targetMin) {
+      cut = Math.min(windowText.length, targetMax);
+    }
+
+    const chunk = text.slice(i, i + cut).trim();
+    if (chunk) out.push(chunk);
+    i += cut;
+
+    // Skip whitespace between chunks
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+  }
+
+  return out.join("\n\n");
+}
+
+function MarkdownPreview({ content }: { content: string }) {
+  const stripped = stripYamlFrontMatter(content);
+  if (looksLikeMarkdown(stripped)) {
+    return (
+      <div className="mx-auto max-w-3xl text-sm text-[#000000] leading-relaxed">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={MARKDOWN_COMPONENTS}
+        >
+          {stripped}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+
+  const normalized = looksLikeGluedText(stripped) ? normalizeExtractedText(stripped) : stripped;
+  const coerced = coercePlainTextToMarkdown(normalized);
+  const previewMarkdown = looksLikeMarkdown(coerced) ? coerced : autoParagraphPlainText(coerced);
+
+  return (
+    <div className="mx-auto max-w-3xl text-sm text-[#000000] leading-relaxed">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={MARKDOWN_COMPONENTS}
+      >
+        {previewMarkdown}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 export function QueuePage() {
   const { getPendingDocuments, getRejectedDocuments, loadOriginalContent, approveDocument, rejectDocument, deleteDocument } = useDocuments();
@@ -124,7 +514,7 @@ export function QueuePage() {
     void loadReindexStatus();
     const id = window.setInterval(() => {
       void loadReindexStatus();
-    }, 5000);
+    }, 15000);
 
     return () => {
       cancelled = true;
@@ -178,7 +568,7 @@ export function QueuePage() {
 
         void (async () => {
           try {
-            const status = await documentService.waitForKnowledgeBankReindexCompletion({ timeoutMs: 45000, intervalMs: 2000 });
+            const status = await documentService.waitForKnowledgeBankReindexCompletion({ intervalMs: 5000 });
             const state = (status.state || "").toLowerCase();
 
             if (state === "completed") {
@@ -288,14 +678,21 @@ export function QueuePage() {
           instruction: msg,
         });
 
-        setChatMessages(prev => [...prev, { role: "ai", content: res.message || "Oppdatert dokumentet." }]);
-        if (res.updated_document) {
-          setRevisedContent(res.updated_document);
+        const updated = (res.updated_document || "").trim();
+        const message = (res.message || "").trim();
+        const updatedLooksChatty = looksLikeChattyReply(updated) && !looksLikeDocumentDraft(updated) && !looksLikeMarkdown(updated);
+
+        // Safety guard: never overwrite the revised draft with a chat-style reply.
+        const chatText = updatedLooksChatty ? updated : (message || "Oppdatert dokumentet.");
+        setChatMessages(prev => [...prev, { role: "ai", content: chatText }]);
+
+        if (updated && !updatedLooksChatty) {
+          setRevisedContent(updated);
 
           // Refresh similarity for the updated draft (without requiring a re-select of the suggestion).
           try {
             setSimilarityLoading(true);
-            const sim = await documentService.checkSimilarityForDocument(res.updated_document, { limit: 5, minCoverageNew: 0.05 });
+            const sim = await documentService.checkSimilarityForDocument(updated, { limit: 5, minCoverageNew: 0.05 });
             setSimilarityMatches(sim.matches || []);
             setSimilarityError(null);
           } catch (e) {
@@ -536,7 +933,7 @@ export function QueuePage() {
                         <p className="text-xs text-[#000000] mt-1">Bruk chat til høyre for å justere innholdet</p>
                       </div>
                       <div className="flex-1 overflow-auto p-6 text-sm text-[#000000] leading-relaxed">
-                        <div className="whitespace-pre-wrap">{revisedContent}</div>
+                        <MarkdownPreview content={revisedContent} />
                       </div>
                      </div>
                   </div>
@@ -714,9 +1111,7 @@ export function QueuePage() {
 
               <h3 className="text-lg text-[#000000] font-semibold mb-4">AI-Revidert innhold (avvist)</h3>
               <div className="bg-[#F5F5F5] rounded-lg p-6 mb-6">
-                <p className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
-                  {viewedRejectedDocument.revisedContent}
-                </p>
+                <MarkdownPreview content={viewedRejectedDocument.revisedContent} />
               </div>
 
               <h3 className="text-lg text-[#000000] font-semibold mb-4">Original innhold</h3>

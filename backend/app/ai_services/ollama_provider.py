@@ -24,26 +24,40 @@ class OllamaProvider:
             self.max_retries = 1
         self.max_retries = max(0, min(self.max_retries, 3))
 
-    def _request_generate(self, prompt: str) -> requests.Response:
+    def _request_generate(self, prompt: str, options_override: dict | None = None) -> requests.Response:
+        options = {
+            "temperature": 0,
+            "num_predict": self.num_predict,
+        }
+        if options_override:
+            for k, v in options_override.items():
+                if v is None:
+                    continue
+                options[k] = v
+
+        # Safety clamp: avoid extreme generation sizes that can hang the server.
+        try:
+            options["num_predict"] = int(options.get("num_predict", self.num_predict))
+        except Exception:
+            options["num_predict"] = self.num_predict
+        options["num_predict"] = max(128, min(options["num_predict"], 16384))
+
         return requests.post(
             self.url,
             json={
                 "model": self.model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {
-                    "temperature": 0,
-                    "num_predict": self.num_predict,
-                }
+                "options": options,
             },
             timeout=self.timeout_s,
         )
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, options: dict | None = None) -> str:
         last_error = None
         for _attempt in range(self.max_retries + 1):
             try:
-                response = self._request_generate(prompt)
+                response = self._request_generate(prompt, options_override=options)
                 break
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                 last_error = exc

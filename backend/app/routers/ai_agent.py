@@ -77,6 +77,11 @@ VIKTIG:
 - Ikke legg inn forklaringer/kommentarer inni dokumentet.
 - Ikke kopier/lim inn selve instruksjonsteksten i dokumentet.
 
+FORBUDT SVARSTIL (må aldri skje):
+- Ikke skriv "I'd be happy to help...", "Before we begin..." eller still avklaringsspørsmål.
+- Anta at instruksjonen gjelder det vedlagte dokumentet og utfør endringen direkte.
+- Ikke svar som en samtale; du skal levere MESSAGE + UPDATED_DOCUMENT.
+
 - Hvis instruksjonen er et metaspørsmål om hva du kan gjøre (f.eks. "hva kan du gjøre?"), så:
     - Svar på spørsmålet i MESSAGE.
     - La UPDATED_DOCUMENT være uendret (returner dokumentet slik det var).
@@ -85,13 +90,110 @@ VIKTIG:
     - Lever en alternativ formulering av hele dokumentet.
     - Behold samme struktur, metadata og tema, men endre ordlyd så det faktisk blir en ny versjon.
 
+LESBARHET (gjelder spesielt for lange dokumenter):
+- Formater UPDATED_DOCUMENT som ryddig Markdown slik at det er lett å lese i UI.
+- Hvis dokumentet er langt, skal det som minimum ha:
+        - `# Tittel` (bruk YAML `title` hvis den finnes)
+        - `## Kapittel`-seksjoner og `### Underkapittel` der det er naturlig
+    - Behold kapittel-/seksjonsnummer hvis de finnes i teksten (f.eks. `## 1 Innledning`, `### 1.1 Bakgrunn`, `## 2 Teori`).
+        - korte avsnitt (2-5 setninger) med blank linje mellom
+        - punktlister der det passer
+- Du kan omstrukturere for lesbarhet (overskrifter/avsnitt/lister) uten å endre fakta eller mening.
+- Ikke legg til nye fakta, nye påstander eller nye avsnitt som ikke finnes i kildeteksten.
+
+PDF/PLAIN-TEXT OPPRYDDING (uten å endre innhold):
+- Fjern/ignorer sidemarkører og layout-støy som "Page 12", enslige romertall (i, ii, iii), og dot-leaders i innholdsfortegnelse (". . .").
+- Hvis du ser dupliserte overskrifter på samme linje (f.eks. "2 THEORY 2 Theory"), behold kun én ryddig overskrift.
+- Fiks linjedeling med bindestrek fra PDF ("in-\ncluding" -> "including").
+- Sett inn manglende mellomrom mellom ord hvis de er "limt" sammen.
+- Bevar tabeller/figurer/listetabeller som tekst, men formater dem ryddig.
+
+STRUKTURMAL (bruk når teksten er flat/ustukturert):
+- Start med `# <Tittel>`.
+- Deretter `## Sammendrag/Abstract` hvis relevant.
+- Bruk `##` for hoveddeler (Innledning, Teori, Metode, Resultat, Diskusjon, Konklusjon, Referanser).
+- Bruk `###` for underseksjoner (f.eks. 1.1, 2.3 osv.).
+- Unngå å gjenta "Contents/List of Figures/List of Tables" med sidetall; hvis du tar dem med, fjern sidetall og gjør dem kompakte.
+
 Output-format (eksakte markører):
 MESSAGE:\n<kort svar til brukeren>\n\nUPDATED_DOCUMENT:\n<fullt oppdatert markdown>
 """.strip()
 
 
+_LONG_DOC_READABILITY_HINT = """
+EKSTRA KRAV FOR LESBARHET:
+- Dokumentet du får kan være langt og/eller uten tydelig struktur.
+- Du skal gjøre UPDATED_DOCUMENT leselig ved å legge til strukturert Markdown:
+    - `#` for tittel, `##` for hovedseksjoner, `###` for underseksjoner.
+    - korte avsnitt og punktlister der det passer.
+- Bevar innhold og mening; ikke dikt opp nye fakta.
+""".strip()
+
+
+_GLUED_PDF_TEXT_HINT = """
+EKSTRA KRAV FOR PDF-TEKST:
+- Dokumentet kan inneholde tekst der ord er "limt" sammen eller linjebrutt på rare steder pga. PDF-ekstraksjon (f.eks. "in- cluding", manglende mellomrom, lange sammenhengende ord).
+- Du skal gjøre teksten leselig ved å:
+    - sette inn naturlige mellomrom mellom ord
+    - normalisere linjeskift og avsnitt
+    - fjerne linjedelingsbindestreker der ord er delt ("in-\ncluding" -> "including")
+- IKKE endre fakta, tall, navn, forkortelser eller fagtermer. Ikke oppsummer og ikke omskriv innholdet til noe annet.
+""".strip()
+
+
 _MSG_MARKER = "MESSAGE:"
 _DOC_MARKER = "UPDATED_DOCUMENT:"
+
+
+def _looks_like_document_text(text: str) -> bool:
+    """Heuristic: determine whether a model output looks like a document draft.
+
+    Used only when the model fails to follow our MESSAGE/UPDATED_DOCUMENT markers.
+    We prefer being conservative to avoid polluting stored drafts with chatty replies.
+    """
+
+    t = (text or "").strip().replace("\r\n", "\n")
+    if not t:
+        return False
+
+    # Strong signals for a document: YAML front matter or Markdown headings.
+    if t.startswith("---\n"):
+        return True
+    if re.search(r"(?m)^#{1,6}\s+\S", t):
+        return True
+
+    # Numbered headings like "1 Introduction".
+    if re.search(r"(?m)^\d+(?:\.\d+)*\s+\S", t):
+        return True
+
+    # Multi-paragraph / multi-line content is more likely a document than a short chat reply.
+    if t.count("\n") >= 12 and len(t) >= 1200:
+        return True
+
+    return False
+
+
+def _looks_like_chatty_reply(text: str) -> bool:
+    """Heuristic: detect assistant-style conversational replies.
+
+    This catches outputs like "I'd be happy to help..." that should go to MESSAGE.
+    """
+
+    t = (text or "").strip()
+    if not t:
+        return False
+
+    # Common assistant boilerplate (English + Norwegian).
+    if re.search(r"(?i)\b(i\s*['’]d\s+be\s+happy\s+to\s+help|before\s+we\s+begin|please\s+confirm|do\s+you\s+have\s+any\s+particular|is\s+that\s+correct)\b", t):
+        return True
+    if re.search(r"(?i)\bkan\s+du\s+si\s+mer|før\s+vi\s+begynner|har\s+du\s+noen\s+preferanser|er\s+det\s+korrekt\b", t):
+        return True
+
+    # Lots of questions in a relatively short answer is likely chat.
+    if t.count("?") >= 2 and len(t) < 2500:
+        return True
+
+    return False
 
 
 def _strip_wrapper_lines(text: str) -> str:
@@ -137,6 +239,48 @@ def _instruction_requests_rewrite(instruction: str) -> bool:
     return any(re.search(p, text, flags=re.IGNORECASE) for p in patterns)
 
 
+def _doc_needs_readability_structuring(doc: str) -> bool:
+    text = (doc or "").replace("\r\n", "\n").strip()
+    if not text:
+        return False
+
+    is_long = len(text) >= 6000 or text.count("\n") >= 180
+    if not is_long:
+        return False
+
+    has_headings = bool(re.search(r"(?m)^#{1,6}\s+\S", text))
+    has_paragraphs = "\n\n" in text
+    has_lists = bool(re.search(r"(?m)^\s*([-*+]\s+\S|\d+\.\s+\S)", text))
+
+    # If it already looks structured, don't force additional restructuring.
+    return not (has_headings and (has_paragraphs or has_lists))
+
+
+def _doc_looks_like_glued_pdf_text(doc: str) -> bool:
+    """Detect PDF extraction artifacts where spacing is largely missing.
+
+    Used only to add an extra instruction to the LLM; we don't mutate stored content here.
+    """
+
+    text = (doc or "").replace("\r\n", "\n").strip()
+    if len(text) < 400:
+        return False
+
+    sample = re.sub(r"\s+", " ", text).strip()
+    if len(sample) < 400:
+        return False
+
+    words = [w for w in sample.split(" ") if w]
+    if not words:
+        return False
+
+    avg_len = sum(len(w) for w in words) / len(words)
+    long_tokens = sum(1 for w in words if len(w) >= 40)
+    space_ratio = sample.count(" ") / max(1, len(sample))
+
+    return long_tokens >= 8 or (space_ratio < 0.055 and avg_len > 11)
+
+
 def _looks_like_prompt_echo(doc: str) -> bool:
     text = doc or ""
     # If the model repeats our input wrapper, never write that into the document.
@@ -179,8 +323,16 @@ def _parse_revision_output(text: str, *, fallback_document: str) -> tuple[str, s
     if _looks_like_prompt_echo(raw) or not raw:
         return "Jeg klarte ikke å tolke svaret fra modellen, så dokumentet ble ikke endret.", fallback_document
 
-    # As a last resort, treat raw as updated document.
-    return "Oppdatert dokumentet.", raw
+    # If the model ignored the required markers, decide whether it's a chat reply or a document.
+    # Prefer treating it as a MESSAGE (chat) unless it strongly looks like a document.
+    if _looks_like_chatty_reply(raw) and not _looks_like_document_text(raw):
+        return raw.strip(), fallback_document
+
+    if _looks_like_document_text(raw) and not _looks_like_chatty_reply(raw):
+        return "Oppdatert dokumentet.", raw
+
+    # Conservative default: surface the model output as MESSAGE and keep document unchanged.
+    return raw.strip(), fallback_document
 
 
 def _sanitize_updated_document(doc: str, instruction: str) -> str:
@@ -342,9 +494,21 @@ def revise_document(request: ReviseRequest) -> ReviseResponse:
         else ""
     )
 
+    readability_hint = (
+        "\n\n" + _LONG_DOC_READABILITY_HINT + "\n"
+        if _doc_needs_readability_structuring(request.document)
+        else ""
+    )
+
+    glued_pdf_hint = (
+        "\n\n" + _GLUED_PDF_TEXT_HINT + "\n"
+        if _doc_looks_like_glued_pdf_text(request.document)
+        else ""
+    )
+
     # Use tags instead of label prefixes to reduce the chance of the model echoing the wrapper.
     prompt = (
-        f"{_REVISION_PROMPT}{rewrite_hint}\n\n"
+        f"{_REVISION_PROMPT}{rewrite_hint}{readability_hint}{glued_pdf_hint}\n\n"
         f"<INSTRUCTION>\n{request.instruction}\n</INSTRUCTION>\n\n"
         f"<DOCUMENT>\n{request.document}\n</DOCUMENT>"
     )

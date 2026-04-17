@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { authService } from "@/services";
+import { getChatStorageKey, getKnowledgeChatStorageKey } from "@/utils/chat-storage";
 
 interface User {
   name: string;
@@ -46,6 +47,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     authService.verifyToken().then((isValid) => {
       if (!isValid) {
+        try {
+          localStorage.removeItem(getChatStorageKey(existingUser.email));
+          localStorage.removeItem(getKnowledgeChatStorageKey(existingUser.email));
+        } catch {
+          // Ignore storage errors.
+        }
         setUser(null);
       }
     });
@@ -66,7 +73,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    const email = user?.email;
     void authService.logout();
+    if (email) {
+      try {
+        localStorage.removeItem(getChatStorageKey(email));
+        localStorage.removeItem(getKnowledgeChatStorageKey(email));
+      } catch {
+        // Ignore storage errors.
+      }
+    }
     setUser(null);
   };
 

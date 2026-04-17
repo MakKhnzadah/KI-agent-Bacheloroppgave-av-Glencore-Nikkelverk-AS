@@ -19,6 +19,8 @@ export interface Document {
   category: DocumentCategory;
   status: DocumentStatus;
   isProcessing?: boolean;
+  generationMode?: "ai" | "fallback";
+  generationReason?: string;
   uploadedBy: string;
   uploadedAt: string;
   originalContent: string;

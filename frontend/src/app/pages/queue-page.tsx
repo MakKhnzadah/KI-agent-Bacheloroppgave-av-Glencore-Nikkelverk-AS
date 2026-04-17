@@ -3,8 +3,22 @@ import { Sidebar } from "@/app/components/sidebar";
 import { MessageSquare, FileText, Clock, ChevronRight, X, Send, XCircle, Trash2 } from "lucide-react";
 import { useDocuments } from "@/app/context/documents-context";
 import { useToast } from "@/app/context/toast-context";
+import { useAuth } from "@/app/context/auth-context";
 import { documentService } from "@/services";
 import { getAuthPermissionErrorMessage } from "@/utils/auth-errors";
+import { getChatStorageKey, safeParseChatHistory, type StoredChatHistory } from "@/utils/chat-storage";
+import {
+  applyTitleToDraft,
+  autoParagraphPlainText,
+  coercePlainTextToMarkdown,
+  extractTitleFromDraft,
+  looksLikeChattyReply,
+  looksLikeDocumentDraft,
+  looksLikeGluedText,
+  looksLikeMarkdown,
+  normalizeExtractedText,
+  stripYamlFrontMatter,
+} from "./queue-page.utils";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -60,331 +74,6 @@ type ReindexStatus = {
   last_indexed_chunks?: number | null;
 };
 
-function stripYamlFrontMatter(markdown: string): string {
-  // Preview-only: suggestions are stored as "YAML front matter + Markdown body".
-  // Rendering the YAML as plain text makes long documents harder to read.
-  const raw = markdown || "";
-  // Normalize BOM + line endings so we can reliably detect --- blocks on Windows.
-  const text = raw.replace(/^\ufeff/, "").replace(/\r\n/g, "\n").replace(/^\s+/, "");
-  if (!text.startsWith("---\n")) return text;
-  const end = text.indexOf("\n---\n", 4);
-  if (end === -1) return text;
-  return text.slice(end + "\n---\n".length).replace(/^\n+/, "");
-}
-
-function looksLikeMarkdown(content: string): boolean {
-  const text = content.replace(/\r\n/g, "\n");
-  return (
-    /^#{1,6}\s+\S/m.test(text) ||
-    /^\s*([-*+]\s+\S|\d+\.\s+\S)/m.test(text) ||
-    /^>\s+\S/m.test(text) ||
-    /^```/m.test(text) ||
-    /\|/.test(text)
-  );
-}
-
-function looksLikeGluedText(content: string): boolean {
-  const text = (content || "").replace(/\r\n/g, "\n");
-  const sample = text.replace(/\s+/g, " ").trim();
-  if (sample.length < 400) return false;
-  const words = sample.split(" ").filter(Boolean);
-  if (words.length === 0) return false;
-  const avgLen = words.reduce((sum, w) => sum + w.length, 0) / words.length;
-  const longTokens = words.filter(w => w.length >= 40).length;
-  const spaceRatio = sample.split("").filter(ch => ch === " ").length / sample.length;
-  return longTokens >= 8 || (spaceRatio < 0.055 && avgLen > 11);
-}
-
-function looksLikeDocumentDraft(content: string): boolean {
-  const text = (content || "").replace(/\r\n/g, "\n").trim();
-  if (!text) return false;
-  if (text.startsWith("---\n")) return true;
-  if (/^#{1,6}\s+\S/m.test(text)) return true;
-  if (/^\d+(?:\.\d+)*\s+\S/m.test(text)) return true;
-  if (text.split("\n").length >= 14 && text.length >= 1200) return true;
-  return false;
-}
-
-function looksLikeChattyReply(content: string): boolean {
-  const text = (content || "").trim();
-  if (!text) return false;
-  if (/\b(i\s*['’]d\s+be\s+happy\s+to\s+help|before\s+we\s+begin|please\s+confirm|is\s+that\s+correct)\b/i.test(text)) return true;
-  if (/\b(før\s+vi\s+begynner|har\s+du\s+noen\s+preferanser|er\s+det\s+korrekt)\b/i.test(text)) return true;
-  const q = (text.match(/\?/g) || []).length;
-  if (q >= 2 && text.length < 2500) return true;
-  return false;
-}
-
-function normalizeExtractedText(content: string): string {
-  // Preview-only: help readability for PDF-extracted text artifacts.
-  let text = (content || "").replace(/\r\n/g, "\n");
-
-  // Fix common private-use glyph issues in URLs like "hps" -> "https".
-  text = text.replace(/h[\uE000-\uF8FF]ps:\/\//gi, "https://");
-  text = text.replace(/h[\uE000-\uF8FF]p:\/\//gi, "http://");
-  text = text.replace(/[\uE000-\uF8FF]/g, "");
-
-  // De-hyphenate common line-break hyphenation like "in- cluding".
-  text = text.replace(/(\w)-\s+(\w)/g, "$1$2");
-
-  // Add missing spaces after punctuation so sentence splitting works.
-  text = text.replace(/([.,;:!?])(\S)/g, "$1 $2");
-  text = text.replace(/(\))(\S)/g, "$1 $2");
-  text = text.replace(/(\S)(\()/g, "$1 $2");
-
-  // Collapse excessive spaces while keeping newlines (paragraph detection uses them).
-  text = text.replace(/[ \t\f\v]+/g, " ");
-  text = text.replace(/\n{3,}/g, "\n\n");
-  return text.trim();
-}
-
-function coercePlainTextToMarkdown(content: string): string {
-  // Preview-only: try to render common PDF/plain-text structures as readable Markdown.
-  const raw = (content || "").replace(/\r\n/g, "\n");
-  if (!raw.trim()) return "";
-
-  const stripDotLeadersAndPageNo = (s: string): { text: string; pageNo?: string } => {
-    // Typical TOC/LOF/LOT lines contain dot leaders and a trailing page number:
-    // "1.1 Background . . . 1" or "11 Qt Creator[25] . . . 17".
-    const noLeaders = s.replace(/(\s*\.(?:\s*\.)+\s*)/g, " ").replace(/\s{2,}/g, " ").trim();
-    const m = noLeaders.match(/^(.*?)(?:\s+(\d+|[ivxlcdm]{1,6}))\s*$/i);
-    if (!m) return { text: noLeaders };
-    const text = (m[1] || "").trim();
-    const pageNo = (m[2] || "").trim();
-    if (!text) return { text: noLeaders };
-    return { text, pageNo };
-  };
-
-  const isLikelyStandalonePageMarker = (line: string): boolean => {
-    if (/^page\s+\d+$/i.test(line)) return true;
-    // Roman numerals used as page markers in front matter.
-    if (/^[ivxlcdm]{1,6}$/i.test(line)) return true;
-    return false;
-  };
-
-  const normalizeDuplicateNumberedHeading = (line: string): string | null => {
-    // Common PDF artifact: "2 THEORY 2 Theory" or "1 INTRODUCTION 1 Introduction".
-    // Prefer the part that contains lowercase letters.
-    const m = line.match(/^\s*(\d+(?:\.\d+)*)\s+(.+?)\s+\1\s+(.+?)\s*$/);
-    if (!m) return null;
-    const numbering = m[1];
-    const partA = m[2].trim();
-    const partB = m[3].trim();
-    const pick = /[a-zæøå]/.test(partB) ? partB : partA;
-    return `${numbering} ${pick}`;
-  };
-
-  const lines = raw.split("\n");
-  const out: string[] = [];
-
-  const pushBlank = () => {
-    if (out.length === 0) return;
-    if (out[out.length - 1] !== "") out.push("");
-  };
-
-  let tocMode: "none" | "toc" | "lof" | "lot" = "none";
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const original = lines[i] ?? "";
-    let line = original.replace(/[ \t\f\v]+/g, " ").trim();
-    if (!line) {
-      // Keep at most one blank line.
-      if (out.length > 0 && out[out.length - 1] !== "") out.push("");
-      continue;
-    }
-
-    // Split cases like "Contents 1 Introduction 1" into two lines.
-    const combined = line.match(/^(contents|list of figures|list of tables|nomenclature)\s+(.+)$/i);
-    if (combined) {
-      const head = combined[1];
-      const rest = (combined[2] || "").trim();
-      if (rest) {
-        lines.splice(i + 1, 0, rest);
-      }
-      line = head;
-    }
-
-    // Drop standalone page markers.
-    if (isLikelyStandalonePageMarker(line)) {
-      continue;
-    }
-
-    // Section markers that often introduce structured index blocks.
-    if (/^contents$/i.test(line)) {
-      pushBlank();
-      out.push("## Contents");
-      pushBlank();
-      tocMode = "toc";
-      continue;
-    }
-    if (/^list of figures$/i.test(line)) {
-      pushBlank();
-      out.push("## List of Figures");
-      pushBlank();
-      tocMode = "lof";
-      continue;
-    }
-    if (/^list of tables$/i.test(line)) {
-      pushBlank();
-      out.push("## List of Tables");
-      pushBlank();
-      tocMode = "lot";
-      continue;
-    }
-
-    // TOC / List-of-* entries.
-    if (tocMode !== "none") {
-      // End the index block when we hit a new top-level chapter heading.
-      if (/^\d+\s+[A-Z][A-Z\s]{3,}$/i.test(line) && !/\s\d+$/i.test(line)) {
-        tocMode = "none";
-        // fall through to normal handling below
-      } else {
-        // Normalize dot leaders and strip trailing page markers.
-        const cleaned = stripDotLeadersAndPageNo(line);
-
-        // Contents: numbered outline entries.
-        const tocEntry = cleaned.text.match(/^(\d+(?:\.\d+)*)\s+(.+)$/);
-        if (tocEntry && tocMode === "toc") {
-          const numbering = tocEntry[1];
-          const title = tocEntry[2].trim();
-          const depth = numbering.split(".").length;
-          const indent = " ".repeat(Math.max(0, (depth - 1) * 2));
-          out.push(`${indent}- ${numbering} ${title}`);
-          continue;
-        }
-
-        // List of Figures/Tables: entries often look like "1 caption ... 14".
-        const listEntry = cleaned.text.match(/^(\d+)\s+(.+)$/);
-        if (listEntry && (tocMode === "lof" || tocMode === "lot")) {
-          const n = listEntry[1];
-          const caption = listEntry[2].trim();
-          const label = tocMode === "lof" ? "Figure" : "Table";
-          out.push(`- ${label} ${n}: ${caption}`);
-          continue;
-        }
-
-        // If we can't parse it, keep it as plain text to avoid losing information.
-        out.push(cleaned.text);
-        continue;
-      }
-    }
-
-    // Normalize duplicated headings like "2 THEORY 2 Theory".
-    const normalizedDupHeading = normalizeDuplicateNumberedHeading(line);
-    if (normalizedDupHeading) {
-      line = normalizedDupHeading;
-    }
-
-    // Convert bullet glyphs.
-    if (line.startsWith("• ") || line === "•") {
-      out.push(line === "•" ? "-" : `- ${line.slice(2).trim()}`);
-      continue;
-    }
-
-    // Figures/Tables.
-    const figOrTable = line.match(/^(figure|table)\s+(\d+)\s*:\s*(.+)$/i);
-    if (figOrTable) {
-      pushBlank();
-      const label = figOrTable[1][0].toUpperCase() + figOrTable[1].slice(1).toLowerCase();
-      out.push(`**${label} ${figOrTable[2]}:** ${figOrTable[3].trim()}`);
-      pushBlank();
-      continue;
-    }
-
-    // Numbered headings (e.g., "1 INTRODUCTION", "2.1 Project Control").
-    const numbered = line.match(/^(\d+(?:\.\d+)*)\s+(.+?)$/);
-    if (numbered) {
-      const numbering = numbered[1];
-      const title = numbered[2].trim();
-      // Avoid treating pure TOC lines like "1 Introduction 1" as headings.
-      // If it ends with a lone page number and has no punctuation, keep as plain text.
-      if (/\s(\d+|[ivxlcdm]{1,6})$/i.test(title) && !/[.:;!?]/.test(title)) {
-        const cleaned = stripDotLeadersAndPageNo(line);
-        out.push(cleaned.text);
-        continue;
-      }
-
-      const depth = numbering.split(".").length;
-      const level = Math.min(6, Math.max(2, 1 + depth)); // 1 -> ##, 1.1 -> ###, 1.1.1 -> ####
-      pushBlank();
-      out.push(`${"#".repeat(level)} ${numbering} ${title}`);
-      pushBlank();
-      continue;
-    }
-
-    // ALL CAPS headings (common in PDFs).
-    if (/^[A-Z][A-Z\s]{6,}$/.test(line) && line.length <= 80) {
-      pushBlank();
-      out.push(`## ${line}`);
-      pushBlank();
-      continue;
-    }
-
-    out.push(line);
-  }
-
-  // Clean up: collapse multiple blank lines.
-  const collapsed: string[] = [];
-  for (const l of out) {
-    if (l === "" && collapsed[collapsed.length - 1] === "") continue;
-    collapsed.push(l);
-  }
-
-  return collapsed.join("\n").trim();
-}
-
-function autoParagraphPlainText(content: string): string {
-  // Preview-only: many PDFs become a single huge paragraph after extraction.
-  // This tries to split into readable paragraphs without changing stored content.
-  const text = (content || "").replace(/\r\n/g, "\n").trim();
-  if (!text) return "";
-  if (/\n\n+/.test(text)) return text; // already has paragraphs
-
-  // Chunk by sentence-ish boundaries to create paragraphs.
-  const targetMin = 450;
-  const targetMax = 900;
-  const out: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const maxEnd = Math.min(i + targetMax, text.length);
-    const windowText = text.slice(i, maxEnd);
-
-    // Find last sentence boundary in the window.
-    let cut = -1;
-    for (let j = windowText.length - 1; j >= 0; j -= 1) {
-      const ch = windowText[j];
-      if (ch === "." || ch === "!" || ch === "?") {
-        // Prefer boundaries that are followed by whitespace.
-        const next = windowText[j + 1];
-        if (next === undefined || /\s/.test(next)) {
-          cut = j + 1;
-          break;
-        }
-      }
-    }
-
-    // If we didn't find a boundary, fall back to last space.
-    if (cut === -1) {
-      const space = windowText.lastIndexOf(" ");
-      cut = space > targetMin ? space : windowText.length;
-    }
-
-    // If cut is too small, just take a bigger chunk.
-    if (cut < targetMin) {
-      cut = Math.min(windowText.length, targetMax);
-    }
-
-    const chunk = text.slice(i, i + cut).trim();
-    if (chunk) out.push(chunk);
-    i += cut;
-
-    // Skip whitespace between chunks
-    while (i < text.length && /\s/.test(text[i])) i += 1;
-  }
-
-  return out.join("\n\n");
-}
-
 function MarkdownPreview({ content }: { content: string }) {
   const stripped = stripYamlFrontMatter(content);
   if (looksLikeMarkdown(stripped)) {
@@ -419,12 +108,18 @@ function MarkdownPreview({ content }: { content: string }) {
 export function QueuePage() {
   const { getPendingDocuments, getRejectedDocuments, loadOriginalContent, approveDocument, rejectDocument, deleteDocument } = useDocuments();
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatByDocumentId, setChatByDocumentId] = useState<StoredChatHistory>({});
   const [inputMessage, setInputMessage] = useState("");
   const [revisedContent, setRevisedContent] = useState("");
+  const [editableTitle, setEditableTitle] = useState("");
+  const [revisedDirty, setRevisedDirty] = useState(false);
   const [viewRejectedDoc, setViewRejectedDoc] = useState<string | null>(null);
-  const [viewingOriginal, setViewingOriginal] = useState(false);
+
+  const [wordPdfUrlByDocId, setWordPdfUrlByDocId] = useState<Record<string, string>>({});
+  const [wordPdfErrorByDocId, setWordPdfErrorByDocId] = useState<Record<string, string>>({});
+  const [pdfByDocId, setPdfByDocId] = useState<Record<string, boolean>>({});
 
   const [similarityLoading, setSimilarityLoading] = useState(false);
   const [similarityError, setSimilarityError] = useState<string | null>(null);
@@ -438,18 +133,246 @@ export function QueuePage() {
   const selectedDocument = documents.find(doc => doc.id === selectedDocId);
   const viewedRejectedDocument = rejectedDocuments.find(doc => doc.id === viewRejectedDoc);
 
-  const selectedIsPdf = !!selectedDocument?.fileName && selectedDocument.fileName.toLowerCase().endsWith(".pdf");
-  const viewedRejectedIsPdf = !!viewedRejectedDocument?.fileName && viewedRejectedDocument.fileName.toLowerCase().endsWith(".pdf");
+  const chatMessages: ChatMessage[] = selectedDocId ? ((chatByDocumentId[selectedDocId] ?? []) as ChatMessage[]) : [];
+
+  const selectedFileLower = (selectedDocument?.fileName || "").toLowerCase();
+  const viewedRejectedFileLower = (viewedRejectedDocument?.fileName || "").toLowerCase();
+
+  const selectedIsPdf = !!selectedFileLower && selectedFileLower.endsWith(".pdf");
+  const selectedIsDocx = !!selectedFileLower && selectedFileLower.endsWith(".docx");
+  const viewedRejectedIsPdf = !!viewedRejectedFileLower && viewedRejectedFileLower.endsWith(".pdf");
+  const viewedRejectedIsDocx = !!viewedRejectedFileLower && viewedRejectedFileLower.endsWith(".docx");
+
+  const selectedPdfByHead = selectedDocId ? pdfByDocId[selectedDocId] : undefined;
+  const viewedRejectedPdfByHead = viewRejectedDoc ? pdfByDocId[viewRejectedDoc] : undefined;
+
+  const selectedIsPdfLike = selectedIsPdf || selectedPdfByHead === true;
+  const viewedRejectedIsPdfLike = viewedRejectedIsPdf || viewedRejectedPdfByHead === true;
+
+  const selectedWordPdfUrl = selectedDocId ? wordPdfUrlByDocId[selectedDocId] : undefined;
+  const selectedWordPdfError = selectedDocId ? wordPdfErrorByDocId[selectedDocId] : undefined;
+  const viewedRejectedWordPdfUrl = viewRejectedDoc ? wordPdfUrlByDocId[viewRejectedDoc] : undefined;
+  const viewedRejectedWordPdfError = viewRejectedDoc ? wordPdfErrorByDocId[viewRejectedDoc] : undefined;
+
+  const setWordPdfUrl = (docId: string, url: string) => {
+    setWordPdfUrlByDocId((prev) => {
+      const existing = prev[docId];
+      if (existing && existing !== url) {
+        try {
+          URL.revokeObjectURL(existing);
+        } catch {
+          // ignore
+        }
+      }
+      return { ...prev, [docId]: url };
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      // Cleanup any object URLs on unmount.
+      for (const url of Object.values(wordPdfUrlByDocId)) {
+        if (typeof url === "string" && url.startsWith("blob:")) {
+          try {
+            URL.revokeObjectURL(url);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    };
+  }, [wordPdfUrlByDocId]);
+
+  useEffect(() => {
+    // Detect PDFs even when the filename has no .pdf extension, so the iframe preview still shows.
+    const ids = [selectedDocId, viewRejectedDoc].filter(Boolean) as string[];
+    if (ids.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (const docId of ids) {
+        if (cancelled) return;
+        if (pdfByDocId[docId] !== undefined) continue;
+
+        try {
+          const url = documentService.getOriginalFileUrl(docId);
+          const res = await fetch(url, { method: "HEAD" });
+          const ct = (res.headers.get("content-type") || "").toLowerCase();
+          const isPdf = res.ok && ct.includes("application/pdf");
+          if (cancelled) return;
+          setPdfByDocId((prev) => ({ ...prev, [docId]: isPdf }));
+        } catch {
+          if (cancelled) return;
+          setPdfByDocId((prev) => ({ ...prev, [docId]: false }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocId, viewRejectedDoc, pdfByDocId]);
+
+  useEffect(() => {
+    if (!selectedDocId) return;
+    if (!selectedIsDocx) return;
+    if (wordPdfUrlByDocId[selectedDocId] || wordPdfErrorByDocId[selectedDocId]) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const url = documentService.getOriginalFileUrl(selectedDocId, { render: "pdf" });
+        const res = await fetch(url);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const contentType = (res.headers.get("content-type") || "").toLowerCase();
+        if (!contentType.includes("application/pdf")) {
+          throw new Error(`Unexpected content-type: ${contentType || "(missing)"}`);
+        }
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        setWordPdfUrl(selectedDocId, objectUrl);
+      } catch (e) {
+        if (cancelled) return;
+        setWordPdfErrorByDocId((prev) => ({
+          ...prev,
+          [selectedDocId]: e instanceof Error ? e.message : "PDF-render feilet",
+        }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocId, selectedIsDocx, wordPdfUrlByDocId, wordPdfErrorByDocId]);
+
+  useEffect(() => {
+    if (!viewRejectedDoc) return;
+    if (!viewedRejectedIsDocx) return;
+    if (wordPdfUrlByDocId[viewRejectedDoc] || wordPdfErrorByDocId[viewRejectedDoc]) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const url = documentService.getOriginalFileUrl(viewRejectedDoc, { render: "pdf" });
+        const res = await fetch(url);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const contentType = (res.headers.get("content-type") || "").toLowerCase();
+        if (!contentType.includes("application/pdf")) {
+          throw new Error(`Unexpected content-type: ${contentType || "(missing)"}`);
+        }
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        setWordPdfUrl(viewRejectedDoc, objectUrl);
+      } catch (e) {
+        if (cancelled) return;
+        setWordPdfErrorByDocId((prev) => ({
+          ...prev,
+          [viewRejectedDoc]: e instanceof Error ? e.message : "PDF-render feilet",
+        }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [viewRejectedDoc, viewedRejectedIsDocx, wordPdfUrlByDocId, wordPdfErrorByDocId]);
+
+  useEffect(() => {
+    if (!user?.email) {
+      setChatByDocumentId({});
+      return;
+    }
+
+    const key = getChatStorageKey(user.email);
+    try {
+      const raw = localStorage.getItem(key);
+      setChatByDocumentId(safeParseChatHistory(raw));
+    } catch {
+      setChatByDocumentId({});
+    }
+  }, [user?.email]);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    const key = getChatStorageKey(user.email);
+    try {
+      localStorage.setItem(key, JSON.stringify(chatByDocumentId));
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [chatByDocumentId, user?.email]);
+
+  const appendChatMessages = (messages: ChatMessage[]) => {
+    if (!selectedDocId) return;
+    setChatByDocumentId((prev) => {
+      const existing = (prev[selectedDocId] ?? []) as ChatMessage[];
+      return {
+        ...prev,
+        [selectedDocId]: [...existing, ...messages],
+      };
+    });
+  };
 
   const handleDocumentSelect = (docId: string) => {
     const doc = documents.find(d => d.id === docId);
     setSelectedDocId(docId);
     setRevisedContent(doc?.revisedContent || "");
-    setChatMessages([]);
-    setViewingOriginal(false);
+    setEditableTitle((extractTitleFromDraft(doc?.revisedContent || "") || doc?.title || "").trim());
+    setRevisedDirty(false);
+    setInputMessage("");
     setSimilarityMatches(null);
     setSimilarityError(null);
   };
+
+  useEffect(() => {
+    // Keep modal draft in sync with server updates (polling), unless user has edited it.
+    if (!selectedDocId) return;
+    if (revisedDirty) return;
+    if (!selectedDocument) return;
+    setRevisedContent(selectedDocument.revisedContent || "");
+    setEditableTitle((extractTitleFromDraft(selectedDocument.revisedContent || "") || selectedDocument.title || "").trim());
+  }, [selectedDocId, selectedDocument?.revisedContent, selectedDocument, revisedDirty]);
+
+  useEffect(() => {
+    if (!selectedDocId) return;
+    if (selectedIsPdfLike) return;
+    if (selectedDocument?.originalContent) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        await loadOriginalContent(selectedDocId);
+      } catch (error) {
+        if (cancelled) return;
+        console.error("Failed to load original content:", error);
+        showToast(`Klarte ikke å hente originalt dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocId, selectedIsPdfLike, selectedDocument?.originalContent, loadOriginalContent, showToast]);
 
   useEffect(() => {
     if (!selectedDocId) {
@@ -547,24 +470,17 @@ export function QueuePage() {
           ? "bg-[#B3232F]/10 text-[#7C0D15]"
           : "bg-[#000000]/10 text-[#333333]";
 
-  const handleShowOriginal = async () => {
-    if (!selectedDocId) return;
-    try {
-      if (!selectedIsPdf) {
-        await loadOriginalContent(selectedDocId);
-      }
-      setViewingOriginal(true);
-    } catch (error) {
-      console.error("Failed to load original content:", error);
-      showToast(`Klarte ikke å hente originalt dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
-    }
-  };
-
   const handleApprove = async () => {
     if (selectedDocId) {
       try {
+        if (revisedDirty) {
+          const latest = applyTitleToDraft(revisedContent, editableTitle);
+          await documentService.updateSuggestionDraft(selectedDocId, latest);
+          setRevisedContent(latest);
+        }
+
         await approveDocument(selectedDocId);
-        showToast("Dokument godkjent. AI-revidert versjon er lagret i kunnskapsbanken. Indeksering pågår.", "success");
+        showToast("Dokument godkjent. KI-revidert versjon er lagret i kunnskapsbanken. Indeksering pågår.", "success");
 
         void (async () => {
           try {
@@ -589,8 +505,9 @@ export function QueuePage() {
         })();
 
         setSelectedDocId(null);
-        setChatMessages([]);
         setRevisedContent("");
+        setEditableTitle("");
+        setRevisedDirty(false);
       } catch (error) {
         console.error("Failed to approve document:", error);
         showToast(`Feil ved godkjenning av dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
@@ -604,8 +521,9 @@ export function QueuePage() {
         await rejectDocument(selectedDocId);
         showToast("Dokument avvist. Dokumentet er ikke publisert i kunnskapsbanken.", "success");
         setSelectedDocId(null);
-        setChatMessages([]);
         setRevisedContent("");
+        setEditableTitle("");
+        setRevisedDirty(false);
       } catch (error) {
         console.error("Failed to reject document:", error);
         showToast(`Feil ved avvisning av dokument. ${getAuthPermissionErrorMessage(error)}`, "error");
@@ -615,8 +533,9 @@ export function QueuePage() {
 
   const closeModal = () => {
     setSelectedDocId(null);
-    setChatMessages([]);
     setRevisedContent("");
+    setEditableTitle("");
+    setRevisedDirty(false);
   };
 
   const handleDeleteRejected = async (docId: string) => {
@@ -641,7 +560,7 @@ export function QueuePage() {
     const wantsSimilarityCheck = /\b(sjekk|check|kontroller)\b/i.test(msg) && /\b(likhet|overlapp)\b/i.test(msg);
 
     const userMessage: ChatMessage = { role: "user", content: msg };
-    setChatMessages(prev => [...prev, userMessage]);
+    appendChatMessages([userMessage]);
     setInputMessage("");
     setChatSending(true);
 
@@ -654,7 +573,7 @@ export function QueuePage() {
           setSimilarityError(null);
 
           if (matches.length === 0) {
-            setChatMessages(prev => [...prev, { role: "ai", content: "Jeg fant ingen tydelig overlapp mot kunnskapsbanken i denne versjonen." }]);
+            appendChatMessages([{ role: "ai", content: "Jeg fant ingen tydelig overlapp mot kunnskapsbanken i denne versjonen." }]);
             return;
           }
 
@@ -663,8 +582,7 @@ export function QueuePage() {
             const title = (m.title || m.kb_path).trim();
             return `- ${pct}%: ${title}`;
           });
-          setChatMessages(prev => [
-            ...prev,
+          appendChatMessages([
             {
               role: "ai",
               content: `Her er topp-treffene mot kunnskapsbanken (andel av ditt dokument som overlapper):\n${top.join("\n")}`,
@@ -684,9 +602,10 @@ export function QueuePage() {
 
         // Safety guard: never overwrite the revised draft with a chat-style reply.
         const chatText = updatedLooksChatty ? updated : (message || "Oppdatert dokumentet.");
-        setChatMessages(prev => [...prev, { role: "ai", content: chatText }]);
+        appendChatMessages([{ role: "ai", content: chatText }]);
 
         if (updated && !updatedLooksChatty) {
+          setRevisedDirty(true);
           setRevisedContent(updated);
 
           // Refresh similarity for the updated draft (without requiring a re-select of the suggestion).
@@ -704,8 +623,8 @@ export function QueuePage() {
         }
       } catch (error) {
         console.error("Failed to send chat message:", error);
-        showToast(`Feil ved sending til AI. ${getAuthPermissionErrorMessage(error)}`, "error");
-        setChatMessages(prev => [...prev, { role: "ai", content: "Jeg fikk ikke kontakt med AI akkurat nå." }]);
+        showToast(`Feil ved sending til KI. ${getAuthPermissionErrorMessage(error)}`, "error");
+        appendChatMessages([{ role: "ai", content: "Jeg fikk ikke kontakt med KI akkurat nå." }]);
       } finally {
         setChatSending(false);
       }
@@ -787,9 +706,21 @@ export function QueuePage() {
                             <span className="inline-block px-2 py-0.5 bg-[#000000]/5 rounded text-xs font-semibold text-[#000000]">
                               {doc.category}
                             </span>
+                            {!doc.isProcessing && (
+                              <span
+                                className={`inline-block ml-2 px-2 py-0.5 rounded text-xs font-semibold ${
+                                  doc.generationMode === "fallback"
+                                    ? "bg-[#82131E]/10 text-[#82131E]"
+                                    : "bg-[#0B6A46]/10 text-[#0B6A46]"
+                                }`}
+                                title={doc.generationReason || undefined}
+                              >
+                                {doc.generationMode === "fallback" ? "Fallback" : "KI-forslag"}
+                              </span>
+                            )}
                             {doc.isProcessing && (
                               <span className="inline-block ml-2 px-2 py-0.5 bg-[#00AFAA]/10 rounded text-xs font-semibold text-[#007b77]">
-                                AI behandler...
+                                KI behandler...
                               </span>
                             )}
                           </div>
@@ -863,30 +794,25 @@ export function QueuePage() {
 
        {selectedDocId && selectedDocument && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-8 z-50">
-          <div className="bg-white rounded-lg w-[1100px] h-[700px] flex flex-col shadow-2xl">
+          <div className="bg-white rounded-lg w-[1400px] max-w-[95vw] h-[700px] flex flex-col shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-[#000000]/10 flex-shrink-0">
-              <div className="flex items-center gap-4">
-                <h2 className="text-lg text-[#000000] font-semibold">
-                  {viewingOriginal ? "Original Dokument" : "Gjennomgå AI-forslag"}
-                </h2>
-                {!viewingOriginal && (
-                  <button
-                    onClick={() => void handleShowOriginal()}
-                    className="flex items-center gap-2 px-4 py-2 bg-white border border-[#00AFAA] text-[#00AFAA] rounded-md hover:bg-[#E6F7F7] transition-colors text-sm"
-                  >
-                    <FileText className="w-4 h-4" />
-                    Vis original
-                  </button>
-                )}
-                {viewingOriginal && (
-                  <button
-                    onClick={() => setViewingOriginal(false)}
-                    className="flex items-center gap-2 px-4 py-2 bg-white border border-[#00AFAA] text-[#00AFAA] rounded-md hover:bg-[#E6F7F7] transition-colors text-sm"
-                  >
-                    <FileText className="w-4 h-4" />
-                    Tilbake til AI-forslag
-                  </button>
-                )}
+              <div className="flex items-center gap-4 flex-1 min-w-0">
+                <h2 className="text-lg text-[#000000] font-semibold">Gjennomgå KI-forslag</h2>
+                <div className="flex items-center gap-2 min-w-0 flex-1 max-w-[520px]">
+                  <label className="text-xs font-semibold text-[#000000] whitespace-nowrap">Tittel</label>
+                  <input
+                    type="text"
+                    value={editableTitle}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setEditableTitle(next);
+                      setRevisedDirty(true);
+                      setRevisedContent((prev) => applyTitleToDraft(prev, next));
+                    }}
+                    className="w-full px-3 py-2 border border-[#000000]/20 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#00AFAA] focus:border-transparent"
+                    placeholder="Dokumenttittel"
+                  />
+                </div>
               </div>
               <button
                 onClick={() => {
@@ -898,81 +824,120 @@ export function QueuePage() {
               </button>
             </div>
 
-             {viewingOriginal ? (
-               <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-                 <div className="flex-1 overflow-auto p-8 bg-white">
-                  <div className={selectedIsPdf ? "max-w-5xl mx-auto" : "max-w-4xl mx-auto"}>
-                    <h3 className="text-xl text-[#000000] font-semibold mb-8">{selectedDocument.title}</h3>
-                    {selectedIsPdf ? (
+            <div className="flex-1 overflow-hidden flex min-h-0">
+              <div className="flex-1 flex flex-col overflow-hidden border-r border-[#00AFAA] min-w-0">
+                <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+                  <div className="px-6 py-3 bg-[#E6F7F7] border-b border-[#00AFAA] flex-shrink-0">
+                    <h3 className="text-sm text-[#000000] font-semibold">KI-revidert forslag</h3>
+                    <p className="text-xs text-[#000000] mt-1">Bruk chat til høyre for å justere innholdet</p>
+                  </div>
+                  <div className="flex-1 overflow-auto p-6 text-sm text-[#000000] leading-relaxed">
+                    {selectedDocument.isProcessing ? (
+                      <div className="mb-4 text-xs text-[#000000] bg-[#F5F5F5] border border-[#000000]/10 rounded p-3">
+                        <p className="font-semibold">KI genererer forslag…</p>
+                        <p className="mt-1 text-[#000000]/70">Dokumentet er lastet opp, men forslaget oppdateres automatisk når behandlingen er ferdig.</p>
+                      </div>
+                    ) : null}
+                    <MarkdownPreview content={revisedContent} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 flex flex-col overflow-hidden border-r border-[#000000]/10 min-w-0 bg-white">
+                <div className="px-6 py-3 bg-[#F5F5F5] border-b border-[#000000]/10 flex-shrink-0">
+                  <h3 className="text-sm text-[#000000] font-semibold">Original dokument</h3>
+                  <p className="text-xs text-[#000000] mt-1">Sammenlign med KI-forslaget</p>
+                </div>
+                <div className="flex-1 overflow-auto p-6 bg-white">
+                  <div className={selectedIsPdfLike ? "max-w-5xl mx-auto" : "max-w-4xl mx-auto"}>
+                    <h4 className="text-base text-[#000000] font-semibold mb-4">{selectedDocument.title}</h4>
+                    {selectedIsPdfLike ? (
                       <iframe
                         title={selectedDocument.fileName}
                         src={documentService.getOriginalFileUrl(selectedDocId)}
                         className="w-full h-[520px] border border-[#000000]/10 rounded"
                       />
-                    ) : (
+                    ) : selectedIsDocx ? (
+                      selectedWordPdfUrl ? (
+                        <iframe
+                          title={selectedDocument.fileName}
+                          src={selectedWordPdfUrl}
+                          className="w-full h-[520px] border border-[#000000]/10 rounded"
+                        />
+                      ) : selectedWordPdfError ? (
+                        <div className="space-y-3">
+                          <div className="text-xs text-[#82131E] bg-[#F5F5F5] border border-[#000000]/10 rounded p-3">
+                            <p className="font-semibold">PDF-visning av Word-dokument feilet</p>
+                            <p className="mt-1">Feil: {selectedWordPdfError}</p>
+                            <p className="mt-2 text-[#000000]/70">
+                              Viser derfor et tekstekstrakt (innholdet er hentet ut av dokumentet og kan avvike fra original layout i Word).
+                            </p>
+                            <a
+                              className="inline-block mt-2 text-[#00AFAA] font-semibold hover:underline"
+                              href={documentService.getOriginalFileUrl(selectedDocId)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Åpne originalfil
+                            </a>
+                          </div>
+                          {selectedDocument.originalContent ? (
+                            <div className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
+                              {selectedDocument.originalContent}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-[#000000]/70">Laster tekstekstrakt...</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-[#000000]/70">Laster PDF-visning av Word-dokument...</p>
+                      )
+                    ) : selectedDocument.originalContent ? (
                       <div className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
                         {selectedDocument.originalContent}
                       </div>
+                    ) : (
+                      <p className="text-xs text-[#000000]/70">Laster originalt dokument...</p>
                     )}
-                   </div>
-                </div>
-                
-                <div className="px-6 py-4 border-t border-[#000000]/10 flex items-center bg-white flex-shrink-0">
-                  <p className="text-xs text-[#000000]">
-                    Dette er det originale dokumentet før AI-revisjon
-                  </p>
-                 </div>
-              </div>
-            ) : (
-              <>
-                <div className="flex-1 overflow-hidden flex min-h-0">
-                  <div className="flex-1 flex flex-col overflow-hidden border-r border-[#00AFAA] min-w-0">
-                    <div className="flex-1 flex flex-col overflow-hidden min-h-0">
-                      <div className="px-6 py-3 bg-[#E6F7F7] border-b border-[#00AFAA] flex-shrink-0">
-                        <h3 className="text-sm text-[#000000] font-semibold">AI-Revidert Forslag</h3>
-                        <p className="text-xs text-[#000000] mt-1">Bruk chat til høyre for å justere innholdet</p>
-                      </div>
-                      <div className="flex-1 overflow-auto p-6 text-sm text-[#000000] leading-relaxed">
-                        <MarkdownPreview content={revisedContent} />
-                      </div>
-                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div className="w-[380px] flex-shrink-0 flex flex-col bg-white">
+                <div className="px-6 py-3 bg-[#00AFAA] border-b border-[#00AFAA]">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="w-5 h-5 text-white" />
+                    <h3 className="text-sm text-white font-semibold">Samarbeid med KI</h3>
+                  </div>
+                  <p className="text-xs text-white/90 mt-1">Still spørsmål eller be om endringer</p>
+                </div>
  
-                  <div className="w-[400px] flex flex-col bg-white">
-                    <div className="px-6 py-3 bg-[#00AFAA] border-b border-[#00AFAA]">
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="w-5 h-5 text-white" />
-                        <h3 className="text-sm text-white font-semibold">Samarbeid med AI</h3>
-                      </div>
-                       <p className="text-xs text-white/90 mt-1">Still spørsmål eller be om endringer</p>
-                    </div>
- 
-                    <div className="flex-1 overflow-auto p-4 bg-[#F5F5F5] space-y-3">
-                      <div className="p-4 bg-white rounded-lg border border-[#000000]/10">
-                        <p className="text-xs font-semibold text-[#000000] mb-2">Likhet mot kunnskapsbanken</p>
-                        {selectedDocument?.isProcessing ? (
-                          <p className="text-xs text-[#000000]/70">AI behandler dokumentet – likhet sjekkes etterpå.</p>
-                        ) : similarityLoading ? (
-                          <p className="text-xs text-[#000000]/70">Sjekker overlapp...</p>
-                        ) : similarityError ? (
-                          <p className="text-xs text-[#82131E]">{similarityError}</p>
-                        ) : (similarityMatches && similarityMatches.length > 0) ? (
-                          <div className="space-y-2">
-                            {similarityMatches.map((m) => (
-                              <div key={m.kb_path} className="text-xs text-[#000000]">
-                                <div className="flex items-baseline justify-between gap-3">
-                                  <p className="font-semibold truncate">{m.title || m.kb_path}</p>
-                                  <p className="text-[#00AFAA] font-semibold flex-shrink-0">{Math.round((m.coverage_new || 0) * 100)}%</p>
-                                </div>
-                                <p className="text-[#000000]/60 truncate">{m.kb_path}</p>
-                              </div>
-                            ))}
-                            <p className="text-[11px] text-[#000000]/60 pt-1">Prosent = hvor mye av det nye dokumentet som overlapper.</p>
+                <div className="flex-1 overflow-auto p-4 bg-[#F5F5F5] space-y-3">
+                  <div className="p-4 bg-white rounded-lg border border-[#000000]/10">
+                    <p className="text-xs font-semibold text-[#000000] mb-2">Likhet mot kunnskapsbanken</p>
+                    {selectedDocument?.isProcessing ? (
+                      <p className="text-xs text-[#000000]/70">KI behandler dokumentet – likhet sjekkes etterpå.</p>
+                    ) : similarityLoading ? (
+                      <p className="text-xs text-[#000000]/70">Sjekker overlapp...</p>
+                    ) : similarityError ? (
+                      <p className="text-xs text-[#82131E]">{similarityError}</p>
+                    ) : (similarityMatches && similarityMatches.length > 0) ? (
+                      <div className="space-y-2">
+                        {similarityMatches.map((m) => (
+                          <div key={m.kb_path} className="text-xs text-[#000000]">
+                            <div className="flex items-baseline justify-between gap-3">
+                              <p className="font-semibold truncate">{m.title || m.kb_path}</p>
+                              <p className="text-[#00AFAA] font-semibold flex-shrink-0">{Math.round((m.coverage_new || 0) * 100)}%</p>
+                            </div>
+                            <p className="text-[#000000]/60 truncate">{m.kb_path}</p>
                           </div>
-                        ) : (
-                          <p className="text-xs text-[#000000]/70">Ingen tydelig overlapp funnet.</p>
-                        )}
+                        ))}
+                        <p className="text-[11px] text-[#000000]/60 pt-1">Prosent = hvor mye av det nye dokumentet som overlapper.</p>
                       </div>
+                    ) : (
+                      <p className="text-xs text-[#000000]/70">Ingen tydelig overlapp funnet.</p>
+                    )}
+                  </div>
 
                       {chatMessages.length === 0 && (
                         <div className="p-6 bg-white rounded-lg border border-[#000000]/10 mt-4">
@@ -1001,69 +966,61 @@ export function QueuePage() {
                             {msg.role === "ai" && (
                               <div className="flex items-center gap-2 mb-1">
                                 <MessageSquare className="w-3 h-3 text-[#00AFAA]" />
-                                <span className="text-xs font-semibold text-[#00AFAA]">AI-Agent</span>
+                                <span className="text-xs font-semibold text-[#00AFAA]">KI-agent</span>
                               </div>
                             )}
                             <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
                           </div>
                         </div>
                        ))}
-                    </div>
- 
-                    <div className="p-4 border-t border-[#000000]/10 bg-white">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={inputMessage}
-                          onChange={(e) => setInputMessage(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                          placeholder="Skriv en melding..."
-                          className="flex-1 px-3 py-2 border border-[#000000]/20 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-[#00AFAA] focus:border-transparent"
-                        />
-                        <button
-                          onClick={handleSendMessage}
-                          disabled={!inputMessage.trim() || chatSending}
-                          className="px-4 py-2 bg-[#00AFAA] hover:bg-[#00AFAA]/90 disabled:bg-[#000000]/10 disabled:cursor-not-allowed text-white rounded-md transition-colors"
-                        >
-                          <Send className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
+                </div>
+
+                <div className="p-4 border-t border-[#000000]/10 bg-white">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={inputMessage}
+                      onChange={(e) => setInputMessage(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                      placeholder="Skriv en melding..."
+                      className="flex-1 px-3 py-2 border border-[#000000]/20 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-[#00AFAA] focus:border-transparent"
+                    />
+                    <button
+                      onClick={handleSendMessage}
+                      disabled={!inputMessage.trim() || chatSending}
+                      className="px-4 py-2 bg-[#00AFAA] hover:bg-[#00AFAA]/90 disabled:bg-[#000000]/10 disabled:cursor-not-allowed text-white rounded-md transition-colors"
+                    >
+                      <Send className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
-               </>
-            )}
+              </div>
+            </div>
  
             <div className="px-6 py-4 border-t border-[#000000]/10 flex items-center justify-between bg-white">
-               {!viewingOriginal ? (
-                 <>
-                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-[#00AFAA]/10 rounded-full flex items-center justify-center">
-                      <MessageSquare className="w-4 h-4 text-[#00AFAA]" />
-                    </div>
-                    <p className="text-xs text-[#000000]">
-                      Bruk chatten for å justere dokumentet før godkjenning
-                     </p>
-                  </div>
- 
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={handleReject}
-                      className="flex items-center gap-2 px-6 py-2.5 bg-white border-2 border-[#82131E] text-[#82131E] rounded-md hover:bg-[#82131E]/5 transition-colors text-sm font-semibold"
-                    >
-                      <X className="w-4 h-4" />
-                      Ikke Godkjent
-                    </button>
-                    <button
-                      onClick={handleApprove}
-                      className="flex items-center gap-2 px-6 py-2.5 bg-[#00AFAA] hover:bg-[#00AFAA]/90 text-white rounded-md transition-colors text-sm font-semibold"
-                    >
-                      <span className="text-lg leading-none">✓</span>
-                      Godkjenn AI-versjon
-                    </button>
-                  </div>
-                </>
-              ) : null}
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-[#00AFAA]/10 rounded-full flex items-center justify-center">
+                  <MessageSquare className="w-4 h-4 text-[#00AFAA]" />
+                </div>
+                <p className="text-xs text-[#000000]">Bruk chatten for å justere dokumentet før godkjenning</p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleReject}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-white border-2 border-[#82131E] text-[#82131E] rounded-md hover:bg-[#82131E]/5 transition-colors text-sm font-semibold"
+                >
+                  <X className="w-4 h-4" />
+                  Ikke Godkjent
+                </button>
+                <button
+                  onClick={handleApprove}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-[#00AFAA] hover:bg-[#00AFAA]/90 text-white rounded-md transition-colors text-sm font-semibold"
+                >
+                  <span className="text-lg leading-none">✓</span>
+                  Godkjenn KI-versjon
+                </button>
+              </div>
             </div>
           </div>
          </div>
@@ -1109,19 +1066,50 @@ export function QueuePage() {
                 </p>
               </div>
 
-              <h3 className="text-lg text-[#000000] font-semibold mb-4">AI-Revidert innhold (avvist)</h3>
+              <h3 className="text-lg text-[#000000] font-semibold mb-4">KI-revidert innhold (avvist)</h3>
               <div className="bg-[#F5F5F5] rounded-lg p-6 mb-6">
                 <MarkdownPreview content={viewedRejectedDocument.revisedContent} />
               </div>
 
               <h3 className="text-lg text-[#000000] font-semibold mb-4">Original innhold</h3>
               <div className="bg-white border border-[#000000]/10 rounded-lg p-6">
-                {viewedRejectedIsPdf ? (
+                {viewedRejectedIsPdfLike ? (
                   <iframe
                     title={viewedRejectedDocument.fileName}
                     src={documentService.getOriginalFileUrl(viewedRejectedDocument.id)}
                     className="w-full h-[420px] border border-[#000000]/10 rounded"
                   />
+                ) : viewedRejectedIsDocx ? (
+                  viewedRejectedWordPdfUrl ? (
+                    <iframe
+                      title={viewedRejectedDocument.fileName}
+                      src={viewedRejectedWordPdfUrl}
+                      className="w-full h-[420px] border border-[#000000]/10 rounded"
+                    />
+                  ) : viewedRejectedWordPdfError ? (
+                      <div className="space-y-3">
+                        <div className="text-xs text-[#82131E] bg-[#F5F5F5] border border-[#000000]/10 rounded p-3">
+                          <p className="font-semibold">PDF-visning av Word-dokument feilet</p>
+                          <p className="mt-1">Feil: {viewedRejectedWordPdfError}</p>
+                          <p className="mt-2 text-[#000000]/70">
+                            Viser derfor et tekstekstrakt (innholdet er hentet ut av dokumentet og kan avvike fra original layout i Word).
+                          </p>
+                          <a
+                            className="inline-block mt-2 text-[#00AFAA] font-semibold hover:underline"
+                            href={documentService.getOriginalFileUrl(viewedRejectedDocument.id)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Åpne originalfil
+                          </a>
+                        </div>
+                        <div className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
+                          {viewedRejectedDocument.originalContent}
+                        </div>
+                      </div>
+                  ) : (
+                    <p className="text-xs text-[#000000]/70">Laster PDF-visning av Word-dokument...</p>
+                  )
                 ) : (
                   <p className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
                     {viewedRejectedDocument.originalContent}

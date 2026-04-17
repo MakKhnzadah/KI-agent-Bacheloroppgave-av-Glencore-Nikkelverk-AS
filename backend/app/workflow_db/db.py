@@ -71,8 +71,34 @@ def _migrate_users_table_for_expert_role(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON;")
 
 
+def _ensure_suggestions_generation_columns(conn: sqlite3.Connection) -> None:
+    # SQLite supports ADD COLUMN, but not adding CHECK constraints post-hoc.
+    # We keep this as best-effort to enable explicit generation status/diagnostics.
+    cols = conn.execute("PRAGMA table_info('suggestions')").fetchall()
+    existing = {str(c[1]) for c in cols}  # column name is index 1
+
+    def add(name: str, ddl: str) -> None:
+        if name in existing:
+            return
+        conn.execute(f"ALTER TABLE suggestions ADD COLUMN {ddl}")
+
+    add("generation_status", "generation_status TEXT NOT NULL DEFAULT 'unknown'")
+    add("generation_fallback_used", "generation_fallback_used INTEGER NOT NULL DEFAULT 0")
+    add("generation_attempts", "generation_attempts INTEGER NOT NULL DEFAULT 0")
+    add("generation_started_at", "generation_started_at TEXT")
+    add("generation_finished_at", "generation_finished_at TEXT")
+    add("generation_reason", "generation_reason TEXT")
+    add("generation_error", "generation_error TEXT")
+
+    # Index is optional; create if missing.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_suggestions_generation_status ON suggestions(generation_status)"
+    )
+
+
 def init_db() -> None:
     schema_sql = _read_schema_sql()
     with get_connection() as conn:
         conn.executescript(schema_sql)
         _migrate_users_table_for_expert_role(conn)
+        _ensure_suggestions_generation_columns(conn)

@@ -10,6 +10,14 @@
 
 import { apiClient } from "./apiClient";
 import type { Document, DocumentCategory, DocumentStats } from "@/types";
+import {
+  normalizeStatus,
+  pickCategoryFromSuggestion,
+  pickTitleFromSuggestion,
+  toDocumentFromSuggestion,
+  type SuggestionDetailForMapping,
+  type SuggestionListItemForMapping,
+} from "./documentService.mappers";
 
 const PROCESSING_MODEL_MARKER = "__processing__";
 
@@ -19,24 +27,21 @@ type UploadResponse = {
   structured_draft: string;
   suggestion_addon: string;
   status: string;
+  model?: string;
+  prompt_version?: string;
+  processing?: boolean;
   deduped?: boolean;
 };
 
-type SuggestionListItem = {
-  suggestion_id: string;
-  upload_id: string;
-  status: string;
-  created_at: string;
-  original_filename?: string | null;
-};
+type SuggestionListItem = SuggestionListItemForMapping;
 
-type SuggestionDetail = {
-  suggestion_id: string;
-  upload_id: string;
-  status: string;
+type SuggestionDetail = SuggestionDetailForMapping & {
   model?: string | null;
-  suggestion_json: string;
-  created_at: string;
+  prompt_version?: string | null;
+  generation_attempts?: number | null;
+  generation_started_at?: string | null;
+  generation_finished_at?: string | null;
+  generation_error?: string | null;
 };
 
 type SuggestionOriginal = {
@@ -117,6 +122,22 @@ type KbDocumentResponse = {
   content: string;
 };
 
+type KbDocumentListItem = {
+  kb_path: string;
+  title: string;
+  author: string;
+  date: string;
+  category: string;
+};
+
+type KbDocumentsListResponse = {
+  total: number;
+  returned: number;
+  offset: number;
+  limit: number;
+  documents: KbDocumentListItem[];
+};
+
 type KbReindexStatusResponse = {
   state: string;
   current_run_id?: string | null;
@@ -129,98 +150,41 @@ type KbReindexStatusResponse = {
   last_indexed_chunks?: number | null;
 };
 
-function normalizeStatus(status: string): Document["status"] {
-  const s = (status || "").toLowerCase();
-  if (s === "rejected") return "rejected";
-  if (s === "approved" || s === "applied") return "approved";
-  return "pending";
-}
+type VectorDbDocument = {
+  path: string;
+  kb_path?: string | null;
+  title: string;
+  doc_id?: string | null;
+  doc_hash?: string | null;
+  chunk_count: number;
+};
 
-function formatUploadedAt(sqliteDateTime: string | undefined): string {
-  if (!sqliteDateTime) return "";
-  // Expect "YYYY-MM-DD HH:MM:SS" from SQLite.
-  const iso = sqliteDateTime.replace(" ", "T") + "Z";
-  const dt = new Date(iso);
-  if (Number.isNaN(dt.getTime())) return sqliteDateTime;
+type VectorDbListResponse = {
+  total_documents: number;
+  returned: number;
+  offset: number;
+  limit: number;
+  documents: VectorDbDocument[];
+  persist_dir?: string;
+  collection?: string;
+};
 
-  const day = dt.getUTCDate();
-  const month = dt.toLocaleDateString("nb-NO", { month: "short" });
-  const year = dt.getUTCFullYear();
-  const hh = dt.getUTCHours().toString().padStart(2, "0");
-  const mm = dt.getUTCMinutes().toString().padStart(2, "0");
-  return `${day}. ${month} ${year} - ${hh}:${mm}`;
-}
-
-function extractFrontMatter(doc: string): Record<string, string> {
-  const text = (doc || "").replace(/^\uFEFF/, "");
-  if (!text.startsWith("---\n")) return {};
-
-  const lines = text.split("\n");
-  let endIdx = -1;
-  for (let i = 1; i < lines.length; i += 1) {
-    if (lines[i].trim() === "---") {
-      endIdx = i;
-      break;
-    }
-  }
-  if (endIdx === -1) return {};
-
-  const out: Record<string, string> = {};
-  for (const line of lines.slice(1, endIdx)) {
-    const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)\s*$/);
-    if (!m) continue;
-    const key = m[1];
-    let value = m[2] || "";
-    value = value.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
-    out[key] = value;
-  }
-  return out;
-}
-
-function pickTitleFromSuggestion(suggestionJson: string, fallback: string): string {
-  const fm = extractFrontMatter(suggestionJson);
-  if (fm.title) return fm.title;
-  const heading = suggestionJson.match(/^#\s+(.+)$/m);
-  return (heading?.[1] || "").trim() || fallback;
-}
-
-function pickCategoryFromSuggestion(suggestionJson: string): DocumentCategory {
-  const fm = extractFrontMatter(suggestionJson);
-  const raw = (fm.category || fm.kategori || "").trim();
-  const normalized = raw.toLowerCase();
-  if (normalized === "sikkerhet") return "Sikkerhet";
-  if (normalized === "vedlikehold") return "Vedlikehold";
-  if (normalized === "miljø" || normalized === "miljo") return "Miljø";
-  if (normalized === "kvalitet") return "Kvalitet";
-  if (normalized === "prosedyre") return "Prosedyre";
-  return "Annet";
-}
-
-function toDocumentFromSuggestion(listItem: SuggestionListItem, detail: SuggestionDetail): Document {
-  const fileName = listItem.original_filename || "document";
-  const revised = detail.suggestion_json || "";
-  const title = pickTitleFromSuggestion(revised, fileName);
-  const category = pickCategoryFromSuggestion(revised);
-  const status = normalizeStatus(detail.status);
-
-  return {
-    id: detail.suggestion_id,
-    title,
-    fileName,
-    category,
-    status,
-    isProcessing: detail.model === PROCESSING_MODEL_MARKER,
-    uploadedBy: "System",
-    uploadedAt: formatUploadedAt(detail.created_at || listItem.created_at),
-    originalContent: "",
-    revisedContent: revised,
-    approvedContent: status === "approved" ? revised : undefined,
+type VectorDbReindexResponse = {
+  status: string;
+  indexed?: {
+    files?: number;
+    chunks?: number;
   };
-}
+  persist_dir?: string;
+};
+
 
 class DocumentService {
-  getOriginalFileUrl(suggestionId: string): string {
-    return `${apiClient.baseUrl}/workflow/suggestions/${suggestionId}/file`;
+  getOriginalFileUrl(suggestionId: string, options?: { render?: "pdf" }): string {
+    const base = `${apiClient.baseUrl}/workflow/suggestions/${suggestionId}/file`;
+    if (!options?.render) return base;
+    const qs = new URLSearchParams({ render: options.render });
+    return `${base}?${qs.toString()}`;
   }
 
   async getSuggestionSimilarity(
@@ -282,8 +246,43 @@ class DocumentService {
     return apiClient.getJson<KbDocumentResponse>(`/workflow/kb/document?${qs.toString()}`);
   }
 
+  async listKnowledgeBankDocuments(params?: {
+    limit?: number;
+    offset?: number;
+    category?: string;
+  }): Promise<KbDocumentsListResponse> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params?.category) qs.set("category", params.category);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return apiClient.getJson<KbDocumentsListResponse>(`/workflow/kb/documents${suffix}`);
+  }
+
+  async deleteKnowledgeBankDocument(kbPath: string, deleteIndexed = true): Promise<void> {
+    const qs = new URLSearchParams({ kb_path: kbPath, delete_indexed: String(deleteIndexed) });
+    await apiClient.delete(`/workflow/kb/documents?${qs.toString()}`, { requireAuth: true });
+  }
+
   async getKnowledgeBankReindexStatus(): Promise<KbReindexStatusResponse> {
     return apiClient.getJson<KbReindexStatusResponse>("/workflow/kb/reindex-status");
+  }
+
+  async listVectorDbDocuments(params?: { limit?: number; offset?: number }): Promise<VectorDbListResponse> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return apiClient.getJson<VectorDbListResponse>(`/vector/db/documents${suffix}`);
+  }
+
+  async deleteVectorDbDocument(kbPath: string): Promise<void> {
+    const qs = new URLSearchParams({ kb_path: kbPath });
+    await apiClient.delete(`/vector/db/documents?${qs.toString()}`);
+  }
+
+  async reindexVectorDb(): Promise<VectorDbReindexResponse> {
+    return apiClient.postJson<VectorDbReindexResponse>("/vector/index/kb", {});
   }
 
   async waitForKnowledgeBankReindexCompletion(options?: {
@@ -357,6 +356,14 @@ class DocumentService {
     }
   }
 
+  async updateSuggestionDraft(suggestionId: string, suggestionJson: string): Promise<void> {
+    await apiClient.patchJson<SuggestionDetail>(
+      `/workflow/suggestions/${suggestionId}`,
+      { suggestion_json: suggestionJson },
+      { requireAuth: true },
+    );
+  }
+
   async uploadDocument(params: {
     file: File;
     title?: string;
@@ -381,7 +388,7 @@ class DocumentService {
       fileName: params.file.name,
       category,
       status: normalizeStatus(res.status),
-      isProcessing: true,
+      isProcessing: (res.processing ?? (res.model === PROCESSING_MODEL_MARKER) ?? true),
       uploadedBy: params.uploadedBy || "Ukjent bruker",
       uploadedAt: formattedDate,
       originalContent: "",

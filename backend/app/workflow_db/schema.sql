@@ -90,6 +90,13 @@ CREATE TABLE IF NOT EXISTS suggestions (
   model TEXT,
   prompt_version TEXT,
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','rejected','applied')),
+  generation_status TEXT NOT NULL DEFAULT 'unknown',
+  generation_fallback_used INTEGER NOT NULL DEFAULT 0,
+  generation_attempts INTEGER NOT NULL DEFAULT 0,
+  generation_started_at TEXT,
+  generation_finished_at TEXT,
+  generation_reason TEXT,
+  generation_error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (upload_id) REFERENCES uploads(upload_id) ON DELETE CASCADE
 );

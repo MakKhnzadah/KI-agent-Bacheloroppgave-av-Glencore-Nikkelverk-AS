@@ -1,4 +1,4 @@
-# Glencore Knowledge Base - Kunnskapsbank & AI-Agent
+# Glencore Knowledge Base - Kunnskapsbank & KI-agent
 
 ![Project Screenshot](public/screenshot.png)
 

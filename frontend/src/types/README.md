@@ -293,9 +293,8 @@ async uploadDocument(upload: DocumentUpload): Promise<Document> {
 To add new fields or types:
 
 1. Update the appropriate type file
-2. Update mock data if needed
-3. Update services using the type
-4. Update components using the type
+2. Update services using the type
+3. Update components using the type
 
 Example:
 
@@ -348,6 +347,5 @@ AuthResponse
 ## 📝 Notes
 
 - All types are exported from `/src/types/index.ts`
-- Types match the mock data structure in `/src/data/mock-documents.ts`
 - Types align with service method signatures in `/src/services/`
 - Norwegian field names match Glencore Norway requirements

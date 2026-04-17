@@ -3,8 +3,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import mimetypes
+import os
 import re
+import shutil
+import subprocess
+import sys
 import threading
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -20,380 +25,52 @@ from app.workflow_db.db import get_connection
 from app.vector_store.config import _repo_root_from_here
 from app.vector_store.config import load_vector_store_config
 from app.kb.kb_reader import get_kb_doc, kb_stats
+from app.routers.workflow_helpers import (
+    _api_error,
+    _external_status,
+    _iter_kb_markdown_files,
+    _kb_raw_root,
+    _looks_like_non_norwegian,
+    _mark_reindex_scheduled,
+    _next_available_kb_path,
+    _read_text_best_effort,
+    _reindex_kb_to_chroma,
+    _require_expert_user,
+    _resolve_kb_path,
+    _shingles,
+    _similarity_metrics,
+    _slugify,
+    _split_front_matter,
+    _tokenize_for_similarity,
+    get_reindex_status_snapshot,
+)
 
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
 
 logger = logging.getLogger(__name__)
-_reindex_lock = threading.Lock()
-_reindex_status_lock = threading.Lock()
-_reindex_status: dict[str, object | None] = {
-    "state": "idle",
-    "current_run_id": None,
-    "last_completed_run_id": None,
-    "last_reason": None,
-    "last_started_at": None,
-    "last_finished_at": None,
-    "last_error": None,
-    "last_indexed_files": None,
-    "last_indexed_chunks": None,
-}
+_STRUCTURING_PROMPT_VERSION = os.getenv("STRUCTURING_PROMPT_VERSION", "2026-04-14-rs4").strip() or "2026-04-14-rs4"
+
+_fallback_regen_lock = threading.Lock()
+_fallback_regen_inflight: set[str] = set()
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _set_reindex_status(**updates: object | None) -> None:
-    with _reindex_status_lock:
-        _reindex_status.update(updates)
-
-
-def _mark_reindex_scheduled(reason: str) -> str:
-    run_id = str(uuid.uuid4())
-    _set_reindex_status(
-        state="scheduled",
-        current_run_id=run_id,
-        last_reason=reason,
-        last_error=None,
-        last_started_at=None,
-        last_finished_at=None,
-        last_indexed_files=None,
-        last_indexed_chunks=None,
+def _insert_activity(
+    conn,
+    *,
+    activity_type: str,
+    title: str,
+    description: str,
+    user: str,
+    time_label: str = "nå",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO activities (id, type, title, description, user, time, document_id)
+        VALUES (?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (str(uuid.uuid4()), activity_type, title, description, user, time_label),
     )
-    return run_id
-
-
-def _api_error(status_code: int, code: str, message: str, details: Optional[dict] = None) -> HTTPException:
-    return HTTPException(
-        status_code=status_code,
-        detail={
-            "error": {
-                "code": code,
-                "message": message,
-                "details": details or {},
-            }
-        },
-    )
-
-
-def _extract_bearer_token(authorization: Optional[str]) -> str:
-    if not authorization:
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Missing Authorization header")
-
-    parts = authorization.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid Authorization header")
-
-    return parts[1].strip()
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _parse_iso(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def _require_expert_user(authorization: Optional[str]) -> str:
-    token = _extract_bearer_token(authorization)
-    token_hash = _hash_token(token)
-    now = datetime.now(timezone.utc)
-
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT s.id, s.access_expires_at, u.username, u.role, u.is_active
-            FROM auth_sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.access_token_hash = ?
-              AND s.revoked_at IS NULL
-            """,
-            (token_hash,),
-        ).fetchone()
-
-    if row is None:
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid token")
-
-    if int(row["is_active"] or 0) != 1:
-        raise _api_error(status.HTTP_403_FORBIDDEN, "FORBIDDEN", "User is inactive")
-
-    if _parse_iso(row["access_expires_at"]) <= now:
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Token expired")
-
-    if row["role"] != "expert":
-        raise _api_error(
-            status.HTTP_403_FORBIDDEN,
-            "FORBIDDEN",
-            "Insufficient role",
-            details={"requiredRole": "expert", "currentRole": row["role"]},
-        )
-
-    return row["username"]
-
-
-def _reindex_kb_to_chroma(run_id: Optional[str] = None) -> None:
-    """Re-index the KB raw markdown into Chroma.
-
-    Runs best-effort; errors are logged and do not affect the apply response.
-    """
-
-    if not _reindex_lock.acquire(blocking=False):
-        logger.info("KB re-index already in progress; skipping duplicate request")
-        _set_reindex_status(
-            state="in_progress",
-            last_error=None,
-        )
-        return
-
-    active_run_id = run_id or str(uuid.uuid4())
-
-    _set_reindex_status(
-        state="in_progress",
-        current_run_id=active_run_id,
-        last_started_at=_utc_now_iso(),
-        last_finished_at=None,
-        last_error=None,
-        last_indexed_files=None,
-        last_indexed_chunks=None,
-    )
-
-    try:
-        try:
-            from app.vector_store.chroma_store import ChromaVectorStore
-            from app.vector_store.kb_indexer import index_kb
-            from app.vector_store.ollama_embeddings import OllamaEmbeddingClient
-        except Exception as exc:
-            logger.info("Vector search disabled (chromadb not installed); skipping KB re-index")
-            _set_reindex_status(
-                state="skipped",
-                last_completed_run_id=active_run_id,
-                last_finished_at=_utc_now_iso(),
-                last_error=f"Vector search dependencies are unavailable: {exc}",
-            )
-            return
-
-        cfg = load_vector_store_config()
-        store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
-        embedder = OllamaEmbeddingClient(
-            base_url=cfg.ollama_base_url,
-            model=cfg.ollama_embed_model,
-            timeout_s=cfg.ollama_embed_timeout_s,
-        )
-
-        try:
-            stats = index_kb(store=store, embedder=embedder)
-            logger.info(
-                "KB re-index completed: files=%s chunks=%s persist_dir=%s",
-                stats.get("files"),
-                stats.get("chunks"),
-                str(cfg.persist_dir),
-            )
-            _set_reindex_status(
-                state="completed",
-                last_completed_run_id=active_run_id,
-                last_finished_at=_utc_now_iso(),
-                last_error=None,
-                last_indexed_files=stats.get("files"),
-                last_indexed_chunks=stats.get("chunks"),
-            )
-        except Exception as exc:
-            logger.exception("KB re-index failed")
-            _set_reindex_status(
-                state="failed",
-                last_completed_run_id=active_run_id,
-                last_finished_at=_utc_now_iso(),
-                last_error=f"KB re-index failed: {exc}",
-            )
-    finally:
-        _reindex_lock.release()
-
-
-def _external_status(db_status: str) -> str:
-    # Keep API wording aligned with the upload endpoint response.
-    if db_status == "draft":
-        return "pending_approval"
-    return db_status
-
-
-def _split_front_matter(doc: str) -> tuple[dict, str]:
-    """Parse YAML front matter if present.
-
-    Expected format:
-    ---\n<yaml>\n---\n<body>
-
-    This function is defensive because LLM-generated YAML may be slightly invalid
-    (e.g., unquoted ':' in scalar values). We attempt a small repair for common
-    issues; if parsing still fails, we treat it as no front matter.
-    """
-
-    text = doc.lstrip("\ufeff")
-    if not text.startswith("---\n"):
-        return {}, doc
-
-    # Find the closing '---' line.
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0] != "---\n":
-        return {}, doc
-
-    end_idx = None
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end_idx = i
-            break
-    if end_idx is None:
-        return {}, doc
-
-    front_raw = "".join(lines[1:end_idx])
-    body = "".join(lines[end_idx + 1 :]).lstrip("\n")
-
-    def parse(raw: str) -> dict:
-        parsed = yaml.safe_load(raw) or {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    try:
-        return parse(front_raw), body
-    except YAMLError:
-        # Minimal repair: quote title values that contain ':' (common YAML pitfall).
-        repaired_lines = []
-        for line in front_raw.splitlines():
-            if line.startswith("title:"):
-                value = line[len("title:") :].strip()
-                if value and not (value.startswith("\"") or value.startswith("'")) and ":" in value:
-                    safe = value.replace("\\", "\\\\").replace("\"", "\\\"")
-                    repaired_lines.append(f'title: "{safe}"')
-                    continue
-            repaired_lines.append(line)
-        repaired = "\n".join(repaired_lines) + ("\n" if front_raw.endswith("\n") else "")
-
-        try:
-            return parse(repaired), body
-        except YAMLError:
-            return {}, doc
-
-
-def _slugify(value: str) -> str:
-    v = (value or "").strip().lower()
-    out = []
-    prev_dash = False
-    for ch in v:
-        if ch.isalnum():
-            out.append(ch)
-            prev_dash = False
-        else:
-            if not prev_dash:
-                out.append("-")
-                prev_dash = True
-    slug = "".join(out).strip("-")
-    return slug or "kb-entry"
-
-
-def _kb_raw_root() -> "Path":
-    repo_root = _repo_root_from_here()
-    return Path(repo_root) / "databases" / "knowledge_base" / "raw"
-
-
-def _resolve_kb_path(kb_path: str) -> "Path":
-    """Resolve a user-provided kb path safely under the KB raw root."""
-    root = _kb_raw_root().resolve()
-    rel = Path(kb_path)
-    rel = Path(*rel.parts)  # normalize
-    if rel.is_absolute():
-        raise ValueError("kb_path must be relative")
-
-    full = (root / rel).resolve()
-    if root not in full.parents and full != root:
-        raise ValueError("kb_path escapes KB root")
-    if full.suffix.lower() != ".md":
-        raise ValueError("kb_path must end with .md")
-    return full
-
-
-def _next_available_kb_path(base_name: str, suggestion_id: str) -> "Path":
-    """Return an available KB path under raw/, avoiding collisions."""
-    candidate = _resolve_kb_path(f"{base_name}.md")
-    if not candidate.exists():
-        return candidate
-
-    suffixes = [suggestion_id[:8]]
-    suffixes.extend(str(i) for i in range(2, 1000))
-    for suffix in suffixes:
-        candidate = _resolve_kb_path(f"{base_name}-{suffix}.md")
-        if not candidate.exists():
-            return candidate
-
-    raise HTTPException(status_code=409, detail="Could not allocate unique KB file path")
-
-
-_WORD_RE = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+", re.UNICODE)
-
-
-def _tokenize_for_similarity(text: str, *, max_tokens: int = 6000) -> list[str]:
-    tokens = _WORD_RE.findall((text or "").lower())
-    if len(tokens) > max_tokens:
-        tokens = tokens[:max_tokens]
-    return tokens
-
-
-def _shingles(tokens: list[str], *, n: int = 5, max_shingles: int = 20000) -> set[int]:
-    if n <= 0:
-        raise ValueError("n must be >= 1")
-    if len(tokens) < n:
-        return set()
-
-    out: set[int] = set()
-    for i in range(0, len(tokens) - n + 1):
-        sh = " ".join(tokens[i : i + n])
-        # Stable 64-bit-ish hash (avoid Python's randomized hash())
-        h = hashlib.blake2b(sh.encode("utf-8"), digest_size=8).digest()
-        out.add(int.from_bytes(h, "big"))
-        if len(out) >= max_shingles:
-            break
-    return out
-
-
-def _similarity_metrics(new_text: str, existing_text: str) -> tuple[float, float, float]:
-    """Return (jaccard, coverage_new, coverage_existing) in [0..1].
-
-    coverage_new answers: "How much of the new document is already present elsewhere?"
-    """
-
-    new_tokens = _tokenize_for_similarity(new_text)
-    existing_tokens = _tokenize_for_similarity(existing_text)
-
-    new_set = _shingles(new_tokens)
-    existing_set = _shingles(existing_tokens)
-    if not new_set or not existing_set:
-        return 0.0, 0.0, 0.0
-
-    inter = len(new_set & existing_set)
-    union = len(new_set | existing_set)
-    jaccard = inter / union if union else 0.0
-    coverage_new = inter / len(new_set) if new_set else 0.0
-    coverage_existing = inter / len(existing_set) if existing_set else 0.0
-    return jaccard, coverage_new, coverage_existing
-
-
-def _iter_kb_markdown_files() -> list[Path]:
-    root = _kb_raw_root()
-    if not root.exists():
-        return []
-
-    files: list[Path] = []
-    for p in root.rglob("*.md"):
-        name = p.name.lower()
-        if name in {"readme.md", "_template.md"}:
-            continue
-        if p.name.startswith("_"):
-            continue
-        files.append(p)
-
-    files.sort(key=lambda x: str(x).lower())
-    return files
 
 
 class SimilarityMatch(BaseModel):
@@ -431,6 +108,27 @@ class KbDocumentResponse(BaseModel):
     category: str
     content: str
 
+class KbDocumentListItem(BaseModel):
+    kb_path: str
+    title: str
+    author: str
+    date: str
+    category: str
+
+class KbDocumentsListResponse(BaseModel):
+    total: int
+    returned: int
+    offset: int
+    limit: int
+    documents: list[KbDocumentListItem]
+
+
+class KbDeleteResponse(BaseModel):
+    status: str
+    deleted_kb_path: str
+    deleted_indexed: bool
+    indexed_delete_error: Optional[str] = None
+
 
 class ReindexStatusResponse(BaseModel):
     state: str
@@ -442,16 +140,6 @@ class ReindexStatusResponse(BaseModel):
     last_error: Optional[str] = None
     last_indexed_files: Optional[int] = None
     last_indexed_chunks: Optional[int] = None
-
-
-def _read_text_best_effort(path: Path, *, max_chars: int = 300_000) -> str:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    if len(text) > max_chars:
-        return text[:max_chars]
-    return text
 
 
 class ReviewRequest(BaseModel):
@@ -474,6 +162,56 @@ class SuggestionResponse(BaseModel):
     prompt_version: Optional[str] = None
     suggestion_json: str = Field(..., description="Structured document returned by the agent (YAML front matter + Markdown)")
     created_at: str
+    generation_status: Optional[str] = None
+    generation_fallback_used: Optional[int] = None
+    generation_attempts: Optional[int] = None
+    generation_started_at: Optional[str] = None
+    generation_finished_at: Optional[str] = None
+    generation_reason: Optional[str] = None
+    generation_error: Optional[str] = None
+
+
+def _schedule_fallback_regeneration(*, background_tasks: BackgroundTasks, suggestion_id: str, upload_id: str, original_filename: str) -> None:
+    with _fallback_regen_lock:
+        # Throttle: regenerating a suggestion is expensive (LLM call). The frontend may fetch
+        # many suggestions in parallel on page load, so we keep this strictly bounded.
+        if len(_fallback_regen_inflight) >= 1:
+            return
+        if suggestion_id in _fallback_regen_inflight:
+            return
+        _fallback_regen_inflight.add(suggestion_id)
+
+    background_tasks.add_task(_regenerate_suggestion_in_background, suggestion_id, upload_id, original_filename)
+
+
+def _regenerate_suggestion_in_background(suggestion_id: str, upload_id: str, original_filename: str) -> None:
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT text
+                FROM normalized_documents
+                WHERE upload_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (upload_id,),
+            ).fetchone()
+        if row is None:
+            return
+
+        processed_text = (row["text"] or "").strip()
+        # Mirror upload-time threshold (best-effort guard).
+        if len(re.findall(r"\b\w+\b", processed_text)) < 40:
+            return
+
+        # Reuse the same structuring pipeline used by /documents/upload.
+        from app.routers.documents import _generate_suggestion_async  # local import avoids import cycles
+
+        _generate_suggestion_async(suggestion_id, original_filename, processed_text)
+    finally:
+        with _fallback_regen_lock:
+            _fallback_regen_inflight.discard(suggestion_id)
 
 
 class SuggestionListItem(BaseModel):
@@ -482,6 +220,8 @@ class SuggestionListItem(BaseModel):
     status: str
     created_at: str
     original_filename: Optional[str] = None
+    generation_status: Optional[str] = None
+    generation_fallback_used: Optional[int] = None
 
 
 class OriginalDocumentResponse(BaseModel):
@@ -499,12 +239,22 @@ class ApplyRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class SuggestionUpdateRequest(BaseModel):
+    suggestion_json: str = Field(..., description="Updated structured draft (YAML front matter + Markdown)")
+
+
 @router.get("/suggestions", response_model=list[SuggestionListItem])
 def list_suggestions(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0)) -> list[SuggestionListItem]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT s.suggestion_id, s.upload_id, s.status, s.created_at, u.original_filename
+            SELECT s.suggestion_id,
+                   s.upload_id,
+                   s.status,
+                   s.created_at,
+                   s.generation_status,
+                   s.generation_fallback_used,
+                   u.original_filename
             FROM suggestions s
             LEFT JOIN uploads u ON u.upload_id = s.upload_id
             ORDER BY s.created_at DESC
@@ -520,6 +270,8 @@ def list_suggestions(limit: int = Query(200, ge=1, le=1000), offset: int = Query
             status=_external_status(row["status"]),
             created_at=row["created_at"],
             original_filename=row["original_filename"],
+            generation_status=row["generation_status"],
+            generation_fallback_used=row["generation_fallback_used"],
         )
         for row in rows
     ]
@@ -535,11 +287,24 @@ class ApplyResponse(BaseModel):
 
 
 @router.get("/suggestions/{suggestion_id}", response_model=SuggestionResponse)
-def get_suggestion(suggestion_id: str) -> SuggestionResponse:
+def get_suggestion(suggestion_id: str, background_tasks: BackgroundTasks) -> SuggestionResponse:
     with get_connection() as conn:
         row = conn.execute(
             """
-            SELECT suggestion_id, upload_id, status, model, prompt_version, suggestion_json, created_at
+            SELECT suggestion_id,
+                   upload_id,
+                   status,
+                   model,
+                   prompt_version,
+                   suggestion_json,
+                   created_at,
+                   generation_status,
+                   generation_fallback_used,
+                   generation_attempts,
+                   generation_started_at,
+                   generation_finished_at,
+                   generation_reason,
+                   generation_error
             FROM suggestions
             WHERE suggestion_id = ?
             """,
@@ -549,14 +314,131 @@ def get_suggestion(suggestion_id: str) -> SuggestionResponse:
     if row is None:
         raise HTTPException(status_code=404, detail="Suggestion not found")
 
+    suggestion_json = row["suggestion_json"] or ""
+    model = (row["model"] or "").strip()
+    prompt_version = (row["prompt_version"] or "").strip()
+    generation_status = (row["generation_status"] or "").strip()
+    # One-time auto-regeneration:
+    # - Old fallback drafts (classic marker)
+    # - Old-format drafts lacking evidence markers (KILDE)
+    # - Outputs that are clearly non-Norwegian
+    # This lets already-uploaded documents benefit from improved structuring logic.
+    needs_regen = False
+    if "- Automatisk fallback: KI klarte ikke å levere gyldig strukturert output." in suggestion_json:
+        needs_regen = True
+    if "(KILDE: \"" not in suggestion_json:
+        # Old suggestions were not evidence-backed.
+        needs_regen = True
+    if _looks_like_non_norwegian(suggestion_json):
+        needs_regen = True
+
+    if (
+        needs_regen
+        and generation_status not in {"queued", "running"}
+        and row["upload_id"]
+        and prompt_version != _STRUCTURING_PROMPT_VERSION
+    ):
+        try:
+            # original_filename is needed for title derivation; fetch best-effort.
+            with get_connection() as conn:
+                urow = conn.execute(
+                    "SELECT original_filename FROM uploads WHERE upload_id = ?",
+                    (row["upload_id"],),
+                ).fetchone()
+            original_filename = (urow["original_filename"] if urow else None) or "document"
+            _schedule_fallback_regeneration(
+                background_tasks=background_tasks,
+                suggestion_id=suggestion_id,
+                upload_id=row["upload_id"],
+                original_filename=original_filename,
+            )
+        except Exception:
+            logger.exception("Failed to schedule fallback regeneration for %s", suggestion_id)
+
     return SuggestionResponse(
         suggestion_id=row["suggestion_id"],
         upload_id=row["upload_id"],
         status=_external_status(row["status"]),
         model=row["model"],
         prompt_version=row["prompt_version"],
-        suggestion_json=row["suggestion_json"],
+        suggestion_json=suggestion_json,
         created_at=row["created_at"],
+        generation_status=row["generation_status"],
+        generation_fallback_used=row["generation_fallback_used"],
+        generation_attempts=row["generation_attempts"],
+        generation_started_at=row["generation_started_at"],
+        generation_finished_at=row["generation_finished_at"],
+        generation_reason=row["generation_reason"],
+        generation_error=row["generation_error"],
+    )
+
+
+@router.patch("/suggestions/{suggestion_id}", response_model=SuggestionResponse)
+def update_suggestion(
+    suggestion_id: str,
+    request: SuggestionUpdateRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> SuggestionResponse:
+    """Persist manual edits to a suggestion draft before review/apply."""
+
+    _require_expert_user(authorization)
+
+    updated = (request.suggestion_json or "").strip()
+    if not updated:
+        raise HTTPException(status_code=400, detail="suggestion_json cannot be empty")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT suggestion_id,
+                   upload_id,
+                   status,
+                   model,
+                   prompt_version,
+                   suggestion_json,
+                   created_at,
+                   generation_status,
+                   generation_fallback_used,
+                   generation_attempts,
+                   generation_started_at,
+                   generation_finished_at,
+                   generation_reason,
+                   generation_error
+            FROM suggestions
+            WHERE suggestion_id = ?
+            """,
+            (suggestion_id,),
+        ).fetchone()
+
+        if row is None:
+            raise HTTPException(status_code=404, detail="Suggestion not found")
+
+        if row["status"] not in {"draft", "rejected"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Suggestion cannot be edited in status '{_external_status(row['status'])}'",
+            )
+
+        conn.execute(
+            "UPDATE suggestions SET suggestion_json = ? WHERE suggestion_id = ?",
+            (updated, suggestion_id),
+        )
+
+    return SuggestionResponse(
+        suggestion_id=row["suggestion_id"],
+        upload_id=row["upload_id"],
+        status=_external_status(row["status"]),
+        model=row["model"],
+        prompt_version=row["prompt_version"],
+        suggestion_json=updated,
+        created_at=row["created_at"],
+        generation_status=row["generation_status"],
+        generation_fallback_used=row["generation_fallback_used"],
+        generation_attempts=row["generation_attempts"],
+        generation_started_at=row["generation_started_at"],
+        generation_finished_at=row["generation_finished_at"],
+        generation_reason=row["generation_reason"],
+        generation_error=row["generation_error"],
     )
 
 
@@ -741,8 +623,7 @@ def get_kb_stats() -> KbStatsResponse:
 
 @router.get("/kb/reindex-status", response_model=ReindexStatusResponse)
 def get_kb_reindex_status() -> ReindexStatusResponse:
-    with _reindex_status_lock:
-        snapshot = dict(_reindex_status)
+    snapshot = get_reindex_status_snapshot()
     return ReindexStatusResponse(**snapshot)
 
 
@@ -763,6 +644,116 @@ def get_kb_document(kb_path: str = Query(..., description="Relative path under d
         date=doc.date,
         category=doc.category,
         content=doc.content,
+    )
+
+@router.get("/kb/documents", response_model=KbDocumentsListResponse)
+def list_kb_documents(
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+    category: Optional[str] = Query(default=None, description="Optional category filter. Use 'All' or omit for no filtering."),
+) -> KbDocumentsListResponse:
+    """List KB markdown documents from the raw knowledge base on disk."""
+
+    from app.kb.kb_reader import iter_kb_markdown_files, doc_metadata, read_text_best_effort, kb_raw_root
+
+    wanted = (category or "").strip()
+    wanted_norm = wanted if wanted and wanted != "All" else ""
+
+    root = kb_raw_root().resolve()
+    docs: list[KbDocumentListItem] = []
+
+    for p in iter_kb_markdown_files():
+        try:
+            raw = read_text_best_effort(p, max_chars=60_000)
+        except OSError:
+            continue
+
+        rel = p.resolve().relative_to(root).as_posix()
+        title, cat, author, date = doc_metadata(raw, kb_path=rel)
+        if wanted_norm and cat != wanted_norm:
+            continue
+
+        docs.append(
+            KbDocumentListItem(
+                kb_path=rel,
+                title=title,
+                author=author,
+                date=date,
+                category=cat,
+            )
+        )
+
+    docs.sort(key=lambda d: ((d.title or "").lower(), (d.kb_path or "").lower()))
+    total = len(docs)
+    sliced = docs[offset : offset + limit]
+    return KbDocumentsListResponse(
+        total=total,
+        returned=len(sliced),
+        offset=offset,
+        limit=limit,
+        documents=sliced,
+    )
+
+
+@router.delete("/kb/documents", response_model=KbDeleteResponse)
+def delete_kb_document(
+    kb_path: str = Query(..., description="Relative path under databases/knowledge_base/raw (e.g. 'procedures/pump-a.md')."),
+    delete_indexed: bool = Query(default=True, description="Also remove indexed chunks from vector DB when possible."),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> KbDeleteResponse:
+    """Delete a raw KB markdown document (pre-index source file)."""
+
+    _require_expert_user(authorization)
+
+    try:
+        from app.kb.kb_reader import kb_raw_root, resolve_kb_path
+
+        full = resolve_kb_path(kb_path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="kb_path is invalid")
+
+    if not full.exists() or not full.is_file():
+        raise HTTPException(status_code=404, detail="KB document not found")
+
+    try:
+        full.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete KB document: {exc}")
+
+    # Best-effort cleanup of empty directories under KB raw root.
+    try:
+        root = kb_raw_root().resolve()
+        parent = full.parent.resolve()
+        while parent != root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent.resolve()
+    except Exception:
+        # Ignore cleanup errors; file deletion already succeeded.
+        pass
+
+    deleted_indexed = False
+    indexed_delete_error: Optional[str] = None
+
+    if delete_indexed:
+        try:
+            from app.vector_store.chroma_store import ChromaVectorStore
+            from app.vector_store.config import load_vector_store_config
+
+            cfg = load_vector_store_config()
+            store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
+            store.delete(where={"path": str(full.resolve().as_posix())})
+            deleted_indexed = True
+        except Exception as exc:
+            indexed_delete_error = str(exc)
+
+    return KbDeleteResponse(
+        status="ok",
+        deleted_kb_path=kb_path,
+        deleted_indexed=deleted_indexed,
+        indexed_delete_error=indexed_delete_error,
     )
 
 
@@ -797,8 +788,62 @@ def get_suggestion_original(suggestion_id: str) -> OriginalDocumentResponse:
     )
 
 
+@router.head("/suggestions/{suggestion_id}/file")
+def head_suggestion_file(
+    suggestion_id: str,
+    render: Optional[str] = Query(default=None, description="Optional render mode. Use 'pdf' to request a PDF rendition for .docx files."),
+) -> Response:
+    """HEAD variant for file downloads.
+
+    Some clients (and the frontend) rely on Content-Type detection via HEAD.
+    """
+
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT s.suggestion_id, s.upload_id, u.original_filename, u.content_type, u.stored_path
+            FROM suggestions s
+            LEFT JOIN uploads u ON u.upload_id = s.upload_id
+            WHERE s.suggestion_id = ?
+            """,
+            (suggestion_id,),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+
+    stored_path = row["stored_path"]
+    if not stored_path:
+        raise HTTPException(status_code=404, detail="Original file not found")
+
+    file_path = Path(stored_path)
+    original_filename = row["original_filename"] or file_path.name
+    content_type = row["content_type"] or ""
+    if not content_type or content_type == "application/octet-stream":
+        guessed_type, _ = mimetypes.guess_type(original_filename)
+        content_type = guessed_type or "application/octet-stream"
+
+    render_mode = (render or "").strip().lower()
+    if render_mode == "pdf" and original_filename.lower().endswith(".docx"):
+        pdf_name = f"{Path(original_filename).stem}.pdf"
+        return Response(
+            status_code=status.HTTP_200_OK,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{pdf_name}"'},
+        )
+
+    return Response(
+        status_code=status.HTTP_200_OK,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{original_filename}"'},
+    )
+
+
 @router.get("/suggestions/{suggestion_id}/file")
-def get_suggestion_file(suggestion_id: str) -> FileResponse:
+def get_suggestion_file(
+    suggestion_id: str,
+    render: Optional[str] = Query(default=None, description="Optional render mode. Use 'pdf' to request a PDF rendition for .docx files."),
+) -> FileResponse:
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -836,12 +881,236 @@ def get_suggestion_file(suggestion_id: str) -> FileResponse:
         guessed_type, _ = mimetypes.guess_type(original_filename)
         content_type = guessed_type or "application/octet-stream"
 
+    render_mode = (render or "").strip().lower()
+    if render_mode == "pdf" and original_filename.lower().endswith(".docx"):
+        render_root = (uploads_root / ".rendered").resolve()
+        render_root.mkdir(parents=True, exist_ok=True)
+        cached_pdf = (render_root / f"{suggestion_id}.pdf").resolve()
+
+        try:
+            needs_render = True
+            if cached_pdf.exists():
+                needs_render = cached_pdf.stat().st_mtime < file_path.stat().st_mtime
+
+            if needs_render:
+                _render_docx_to_pdf(file_path, cached_pdf)
+        except Exception as exc:
+            # Never fail the request: fall back to a readable text-based PDF.
+            logger.warning("DOCX->PDF conversion failed for %s: %s", suggestion_id, exc)
+            extracted_text: str | None = None
+            try:
+                with get_connection() as conn:
+                    trow = conn.execute(
+                        """
+                        SELECT text
+                        FROM normalized_documents
+                        WHERE upload_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (row["upload_id"],),
+                    ).fetchone()
+                if trow is not None:
+                    extracted_text = trow["text"]
+            except Exception:
+                extracted_text = None
+
+            _render_text_to_pdf(
+                extracted_text
+                or f"(Kunne ikke konvertere Word-dokumentet til PDF med layout. Viser tekstutdrag.)\n\nFil: {original_filename}\n",
+                cached_pdf,
+            )
+
+        pdf_name = f"{Path(original_filename).stem}.pdf"
+        return FileResponse(
+            path=str(cached_pdf),
+            media_type="application/pdf",
+            filename=pdf_name,
+            headers={"Content-Disposition": f'inline; filename="{pdf_name}"'},
+        )
+
     return FileResponse(
         path=str(file_path),
         media_type=content_type,
         filename=original_filename,
         headers={"Content-Disposition": f'inline; filename="{original_filename}"'},
     )
+
+
+def _render_text_to_pdf(text: str, pdf_path: Path) -> None:
+    """Render plain text into a simple, readable PDF.
+
+    Used as a last-resort fallback when DOCX conversion isn't available.
+    """
+
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    from fpdf import FPDF  # fpdf2
+
+    def normalize(s: str) -> str:
+        s = (s or "").replace("\r\n", "\n").replace("\r", "\n")
+        s = s.replace("\u2013", "-").replace("\u2014", "-")
+        s = s.replace("\u2018", "'").replace("\u2019", "'")
+        s = s.replace("\u201C", '"').replace("\u201D", '"')
+        s = s.replace("\u2022", "-")
+        return s.encode("latin-1", errors="replace").decode("latin-1")
+
+    def soft_wrap_unbreakable_tokens(s: str, max_token: int = 60) -> str:
+        # fpdf2 can throw if a single token is wider than the available cell width.
+        # Insert spaces into long tokens (URLs/IDs) so wrapping becomes possible.
+        parts = re.split(r"(\s+)", s)
+        out: list[str] = []
+        for p in parts:
+            if not p or p.isspace():
+                out.append(p)
+                continue
+            if len(p) <= max_token:
+                out.append(p)
+                continue
+            out.append(" ".join(p[i : i + max_token] for i in range(0, len(p), max_token)))
+        return "".join(out)
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+
+    for raw_line in (text or "").replace("\r\n", "\n").split("\n"):
+        line = normalize(raw_line).rstrip()
+        if not line.strip():
+            pdf.ln(4)
+            continue
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(0, 5.2, txt=soft_wrap_unbreakable_tokens(line))
+
+    with tempfile.NamedTemporaryFile(
+        prefix=pdf_path.stem + "-",
+        suffix=".pdf",
+        dir=str(pdf_path.parent),
+        delete=False,
+    ) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+    try:
+        pdf.output(str(tmp_path))
+        tmp_path.replace(pdf_path)
+    finally:
+        if tmp_path.exists() and tmp_path != pdf_path:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _render_docx_to_pdf(docx_path: Path, pdf_path: Path) -> None:
+    """Render a PDF from DOCX, preferring high-fidelity converters.
+
+    Priority:
+    1) Microsoft Word automation (docx2pdf) on Windows (best fidelity)
+    2) LibreOffice (soffice) if installed (good fidelity)
+    3) Text-based fallback (fpdf2) for readability when no converter is available
+    """
+
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="docx-render-") as tmp_dir:
+        tmp = Path(tmp_dir)
+
+        # 1) docx2pdf (Windows + Word). Output path is a directory.
+        if sys.platform.startswith("win"):
+            try:
+                from docx2pdf import convert  # type: ignore
+
+                convert(str(docx_path), str(tmp))
+                produced = tmp / f"{docx_path.stem}.pdf"
+                if produced.exists():
+                    produced.replace(pdf_path)
+                    return
+            except Exception:
+                # If Word isn't available or conversion fails, try LibreOffice next.
+                pass
+
+        # 2) LibreOffice headless conversion.
+        soffice = shutil.which("soffice") or shutil.which("soffice.exe") or shutil.which("libreoffice")
+        if soffice:
+            cmd = [
+                soffice,
+                "--headless",
+                "--nologo",
+                "--nofirststartwizard",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(tmp),
+                str(docx_path),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if proc.returncode == 0:
+                produced = tmp / f"{docx_path.stem}.pdf"
+                if produced.exists():
+                    produced.replace(pdf_path)
+                    return
+            else:
+                logger.warning("LibreOffice conversion failed: %s", (proc.stderr or proc.stdout or "").strip())
+
+        # 3) Readability fallback: render DOCX text into PDF.
+        from docx import Document  # python-docx
+        from fpdf import FPDF  # fpdf2
+
+        doc = Document(str(docx_path))
+        paragraphs = [p.text for p in doc.paragraphs]
+
+        def normalize(s: str) -> str:
+            s = (s or "").replace("\r\n", "\n").replace("\r", "\n")
+            s = s.replace("\u2013", "-").replace("\u2014", "-")
+            s = s.replace("\u2018", "'").replace("\u2019", "'")
+            s = s.replace("\u201C", '"').replace("\u201D", '"')
+            s = s.replace("\u2022", "-")
+            return s.encode("latin-1", errors="replace").decode("latin-1")
+
+        def soft_wrap_unbreakable_tokens(s: str, max_token: int = 60) -> str:
+            parts = re.split(r"(\s+)", s)
+            out: list[str] = []
+            for p in parts:
+                if not p or p.isspace():
+                    out.append(p)
+                    continue
+                if len(p) <= max_token:
+                    out.append(p)
+                    continue
+                out.append(" ".join(p[i : i + max_token] for i in range(0, len(p), max_token)))
+            return "".join(out)
+
+        pdf = FPDF(orientation="P", unit="mm", format="A4")
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=11)
+
+        for p in paragraphs:
+            text = normalize(p).strip("\n")
+            if not text.strip():
+                pdf.ln(4)
+                continue
+
+            for line in text.split("\n"):
+                line = line.rstrip()
+                if not line:
+                    pdf.ln(3)
+                    continue
+                pdf.set_x(pdf.l_margin)
+                pdf.multi_cell(0, 5.2, txt=soft_wrap_unbreakable_tokens(line))
+            pdf.ln(2)
+
+        with tempfile.NamedTemporaryFile(prefix=pdf_path.stem + "-", suffix=".pdf", dir=str(pdf_path.parent), delete=False) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+        try:
+            pdf.output(str(tmp_path))
+            tmp_path.replace(pdf_path)
+        finally:
+            if tmp_path.exists() and tmp_path != pdf_path:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
 
 @router.post("/suggestions/{suggestion_id}/review", response_model=ReviewResponse)
@@ -855,7 +1124,12 @@ def review_suggestion(
 
     with get_connection() as conn:
         existing = conn.execute(
-            "SELECT suggestion_id, status FROM suggestions WHERE suggestion_id = ?",
+            """
+            SELECT s.suggestion_id, s.status, u.original_filename
+            FROM suggestions s
+            LEFT JOIN uploads u ON u.upload_id = s.upload_id
+            WHERE s.suggestion_id = ?
+            """,
             (suggestion_id,),
         ).fetchone()
 
@@ -881,6 +1155,24 @@ def review_suggestion(
             "UPDATE suggestions SET status = ? WHERE suggestion_id = ?",
             (request.decision, suggestion_id),
         )
+
+        description = (existing["original_filename"] or suggestion_id).strip()
+        if request.decision == "approved":
+            _insert_activity(
+                conn,
+                activity_type="document_approved",
+                title="Nytt dokument godkjent",
+                description=description,
+                user=reviewer,
+            )
+        else:
+            _insert_activity(
+                conn,
+                activity_type="document_rejected",
+                title="Dokument avvist",
+                description=description,
+                user=reviewer,
+            )
 
     return ReviewResponse(
         suggestion_id=suggestion_id,
@@ -957,6 +1249,13 @@ def apply_suggestion(
         conn.execute(
             "UPDATE suggestions SET status = ?, target_kb_path = ? WHERE suggestion_id = ?",
             ("applied", kb_file.as_posix(), suggestion_id),
+        )
+        _insert_activity(
+            conn,
+            activity_type="system_update",
+            title="Dokument publisert i kunnskapsbanken",
+            description=derived_title or kb_file.name,
+            user="System",
         )
 
     # Automatically refresh the vector index after applying KB changes.

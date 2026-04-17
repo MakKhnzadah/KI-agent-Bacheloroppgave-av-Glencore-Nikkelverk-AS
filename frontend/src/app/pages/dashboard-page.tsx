@@ -1,11 +1,45 @@
 import { Sidebar } from "@/app/components/sidebar";
 import { FileText, Info, Clock } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { useDocuments } from "@/app/context/documents-context";
+import { activityService } from "@/services";
+import type { Activity } from "@/types";
 
 export function DashboardPage() {
   const navigate = useNavigate();
   const { documents, getPendingDocuments } = useDocuments();
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(true);
+  const [activitiesError, setActivitiesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadActivities = async () => {
+      setActivitiesLoading(true);
+      setActivitiesError(null);
+
+      try {
+        const recentActivities = await activityService.getRecentActivities(5);
+        if (!isMounted) return;
+        setActivities(recentActivities);
+      } catch (error) {
+        if (!isMounted) return;
+        console.error("Failed to load activities:", error);
+        setActivitiesError("Kunne ikke hente aktivitet nå.");
+      } finally {
+        if (!isMounted) return;
+        setActivitiesLoading(false);
+      }
+    };
+
+    void loadActivities();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
   
   const pendingCount = getPendingDocuments().length;
   const totalDocumentsCount = documents.length;
@@ -40,33 +74,6 @@ export function DashboardPage() {
       iconBg: "bg-[#764484]/10",
       clickable: true,
       action: () => navigate("/knowledge-bank"),
-    },
-  ];
-
-  const activities = [
-    {
-      title: "Nytt dokument godkjent",
-      description: "Prosedyre for elektrolyse-vedlikehold",
-      user: "Erik Berg",
-      time: "15 minutter siden",
-    },
-    {
-      title: "KI-forslag klar",
-      description: "Oppdatering: Sikkerhetsprosedyrer smelteovn",
-      user: "System",
-      time: "2 timer",
-    },
-    {
-      title: "Dokument lastet opp",
-      description: "Kvalitetskontroll raffinering Q4 2025",
-      user: "Maria Hansen",
-      time: "4 timer",
-    },
-    {
-      title: "Nytt dokument godkjent",
-      description: "Vedlikeholdsrutiner for filtreringssystem",
-      user: "Johan Olsen",
-      time: "1 dag",
     },
   ];
 
@@ -109,21 +116,34 @@ export function DashboardPage() {
                   <h2 className="text-lg text-[#000000] font-semibold mb-1">Nylig aktivitet</h2>
                   <p className="text-base text-[#000000]/80">Siste oppdateringer i kunnskapsbanken</p>
                 </div>
-                <div className="space-y-6">
-                  {activities.map((activity, index) => (
-                    <div key={index} className="flex items-start gap-4">
-                      {/* Small dot instead of large circle */}
-                      <div className="w-2 h-2 bg-[#00afaa] rounded-full mt-2.5 flex-shrink-0" />
-                      <div className="flex-1">
-                        <h3 className="text-base text-[#000000] mb-1">{activity.title}</h3>
-                        <p className="text-base text-[#000000]/85 mb-1">{activity.description}</p>
-                        <p className="text-xs text-[#000000]/70">
-                          {activity.user} • {activity.time}
-                        </p>
+                {activitiesLoading && (
+                  <p className="text-sm text-[#000000]/70">Laster aktivitet...</p>
+                )}
+
+                {!activitiesLoading && activitiesError && (
+                  <p className="text-sm text-[#82131E]">{activitiesError}</p>
+                )}
+
+                {!activitiesLoading && !activitiesError && activities.length === 0 && (
+                  <p className="text-sm text-[#000000]/70">Ingen nylig aktivitet enda.</p>
+                )}
+
+                {!activitiesLoading && !activitiesError && activities.length > 0 && (
+                  <div className="space-y-6">
+                    {activities.map((activity) => (
+                      <div key={activity.id} className="flex items-start gap-4">
+                        <div className="w-2 h-2 bg-[#00afaa] rounded-full mt-2.5 flex-shrink-0" />
+                        <div className="flex-1">
+                          <h3 className="text-base text-[#000000] mb-1">{activity.title}</h3>
+                          <p className="text-base text-[#000000]/85 mb-1">{activity.description}</p>
+                          <p className="text-xs text-[#000000]/70">
+                            {activity.user} • {activity.time}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

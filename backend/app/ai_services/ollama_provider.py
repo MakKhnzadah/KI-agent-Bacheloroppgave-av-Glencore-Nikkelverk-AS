@@ -29,9 +29,17 @@ class OllamaProvider:
             "temperature": 0,
             "num_predict": self.num_predict,
         }
+
+        # Some Ollama APIs support `format: "json"` as a top-level request field.
+        # Allow callers to pass it via options_override.
+        request_format = None
         if options_override:
+            if "format" in options_override:
+                request_format = options_override.get("format")
             for k, v in options_override.items():
                 if v is None:
+                    continue
+                if k == "format":
                     continue
                 options[k] = v
 
@@ -42,14 +50,18 @@ class OllamaProvider:
             options["num_predict"] = self.num_predict
         options["num_predict"] = max(128, min(options["num_predict"], 16384))
 
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": options,
+        }
+        if request_format is not None:
+            payload["format"] = request_format
+
         return requests.post(
             self.url,
-            json={
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": options,
-            },
+            json=payload,
             timeout=self.timeout_s,
         )
 

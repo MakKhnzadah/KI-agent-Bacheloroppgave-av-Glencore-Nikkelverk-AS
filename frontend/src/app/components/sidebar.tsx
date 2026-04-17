@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router";
-import { LayoutGrid, Upload, CheckCircle, FileText, LogOut } from "lucide-react";
+import { LayoutGrid, Upload, CheckCircle, FileText, Database, LogOut } from "lucide-react";
 import { useAuth } from "@/app/context/auth-context";
 import { useDocuments } from "@/app/context/documents-context";
 
@@ -16,6 +16,7 @@ export function Sidebar() {
     { path: "/upload", label: "Last opp dokument", icon: Upload },
     { path: "/queue", label: "Til godkjenning", icon: CheckCircle, badge: pendingCount },
     { path: "/knowledge-bank", label: "Kunnskapsbank", icon: FileText },
+    { path: "/files", label: "Filer", icon: Database },
   ];
 
   const handleLogout = () => {
@@ -32,7 +33,7 @@ export function Sidebar() {
           className="flex flex-col items-center gap-4 hover:opacity-80 transition-opacity cursor-pointer"
         >
           <img src="/assets/glencore-logo.svg" className="w-[210px] h-auto object-contain" alt="Glencore Logo" />
-          <p className="text-sm text-[#000000]/70 text-center">Kunnskapsbank & AI-Agent</p>
+          <p className="text-sm text-[#000000]/70 text-center">Kunnskapsbank & KI-agent</p>
         </button>
       </div>
 

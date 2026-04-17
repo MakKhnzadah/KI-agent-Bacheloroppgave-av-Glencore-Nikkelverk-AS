@@ -7,5 +7,4 @@
 
 export { documentService } from "./documentService";
 export { authService } from "./authService";
-export { knowledgeService } from "./knowledgeService";
 export { activityService } from "./activityService";

@@ -13,6 +13,82 @@ from app.agents.structuring_agents import STRUCTURING_AGENT_PROMPT
 router = APIRouter(prefix="/agent", tags=["AI Agent"])
 logger = logging.getLogger(__name__)
 
+
+def _looks_like_non_norwegian(text: str) -> bool:
+    """Heuristic: flag outputs that are mostly English.
+
+    Used as a last-resort guard to keep chat-visible responses in Norwegian.
+    """
+
+    body = (text or "").strip()
+    if not body:
+        return False
+
+    head = body[:4500].lower()
+    head = re.sub(r"(?m)^#{1,6}\s+", "", head)
+    head = re.sub(r"[`*_>\[\]\(\)\{\}|]", " ", head)
+    words = re.findall(r"[a-zæøå]+", head, flags=re.IGNORECASE)
+    if len(words) < 60:
+        return False
+
+    norwegian = {
+        "og",
+        "ikke",
+        "som",
+        "for",
+        "med",
+        "til",
+        "av",
+        "på",
+        "i",
+        "skal",
+        "kan",
+        "må",
+        "det",
+        "den",
+        "dette",
+        "disse",
+        "fra",
+        "ved",
+        "gjelder",
+        "krav",
+        "tiltak",
+        "anbefalinger",
+    }
+    english = {
+        "the",
+        "and",
+        "to",
+        "of",
+        "in",
+        "for",
+        "with",
+        "this",
+        "that",
+        "should",
+        "must",
+        "summary",
+        "recommendations",
+        "proposal",
+        "please",
+        "before",
+        "begin",
+        "confirm",
+    }
+
+    n_count = sum(1 for w in words if w in norwegian)
+    e_count = sum(1 for w in words if w in english)
+    return e_count >= 12 and e_count > (n_count * 1.4) and n_count < 14
+
+
+def _force_norwegian_message(message: str, *, default: str) -> str:
+    msg = (message or "").strip()
+    if not msg:
+        return default
+    if _looks_like_non_norwegian(msg):
+        return default
+    return msg
+
 class DocumentRequest(BaseModel):
     text: str
 
@@ -166,10 +242,6 @@ def _looks_like_document_text(text: str) -> bool:
     if re.search(r"(?m)^\d+(?:\.\d+)*\s+\S", t):
         return True
 
-    # Multi-paragraph / multi-line content is more likely a document than a short chat reply.
-    if t.count("\n") >= 12 and len(t) >= 1200:
-        return True
-
     return False
 
 
@@ -184,7 +256,20 @@ def _looks_like_chatty_reply(text: str) -> bool:
         return False
 
     # Common assistant boilerplate (English + Norwegian).
-    if re.search(r"(?i)\b(i\s*['’]d\s+be\s+happy\s+to\s+help|before\s+we\s+begin|please\s+confirm|do\s+you\s+have\s+any\s+particular|is\s+that\s+correct)\b", t):
+    if re.search(
+        r"(?i)\b("
+        r"i\s*['’]d\s+be\s+happy\s+to\s+help|"
+        r"before\s+we\s+begin|"
+        r"please\s+confirm|"
+        r"do\s+you\s+have\s+any\s+particular|"
+        r"is\s+that\s+correct|"
+        r"from\s+what\s+i\s+can\s+see|"
+        r"here\s*['’]?s\s+the\s+original\s+text|"
+        r"please\s+provide\s+me\s+with\s+specific\s+instructions|"
+        r"i\s*['’]?ll\s+do\s+my\s+best\s+to\s+assist\s+you"
+        r")\b",
+        t,
+    ):
         return True
     if re.search(r"(?i)\bkan\s+du\s+si\s+mer|før\s+vi\s+begynner|har\s+du\s+noen\s+preferanser|er\s+det\s+korrekt\b", t):
         return True
@@ -290,6 +375,28 @@ def _looks_like_prompt_echo(doc: str) -> bool:
     if re.search(r"(?im)<\/?\s*DOCUMENT\s*>", text):
         return True
     if re.search(r"(?im)<\/?\s*INSTRUCTION\s*>", text):
+        return True
+    return False
+
+
+def _looks_like_revision_prompt_echo(doc: str) -> bool:
+    """Detect when the model leaked our revision prompt into UPDATED_DOCUMENT."""
+
+    text = (doc or "").strip()
+    if not text:
+        return False
+
+    # Strong signature from _REVISION_PROMPT (Norwegian) that should never be in the document.
+    if "Du er en hjelpsom assistent som redigerer et Markdown-dokument" in text:
+        return True
+    # Common English system-prompt leaks.
+    if re.search(r"(?i)\byou\s+are\s+(a\s+)?helpful\s+assistant\b", text):
+        return True
+    if re.search(r"(?i)\byou\s+are\s+chatgpt\b", text):
+        return True
+    if "FORBUDT SVARSTIL" in text or "Output-format" in text:
+        return True
+    if "MESSAGE:" in text and "UPDATED_DOCUMENT:" in text:
         return True
     return False
 
@@ -516,6 +623,30 @@ def revise_document(request: ReviseRequest) -> ReviseResponse:
     output = llm.generate(prompt)
     message, updated_document = _parse_revision_output(output, fallback_document=request.document)
     updated_document = _sanitize_updated_document(updated_document, request.instruction)
+
+    # Block prompt leakage into the document.
+    if _looks_like_revision_prompt_echo(updated_document):
+        message = "Jeg fikk et uventet svar fra modellen og gjorde ingen endringer."
+        updated_document = request.document
+
+    # Reject non-Norwegian document overwrites.
+    if (updated_document or "") != (request.document or "") and _looks_like_non_norwegian(updated_document):
+        message = "Jeg klarte ikke å få et svar på norsk, så dokumentet ble ikke endret."
+        updated_document = request.document
+
+    # Hard guard: never return a chatty reply as the updated document.
+    # The frontend will sometimes display updated_document as chat text when it looks chatty;
+    # keep chat-visible text in `message` instead.
+    if updated_document and _looks_like_chatty_reply(updated_document) and not _looks_like_document_text(updated_document):
+        message = updated_document
+        updated_document = request.document
+
+    # Enforce Norwegian for the chat-visible message.
+    if (updated_document or "").strip() and (updated_document or "") != (request.document or ""):
+        message = _force_norwegian_message(message, default="Oppdatert dokumentet.")
+    else:
+        message = _force_norwegian_message(message, default="Jeg gjorde ingen endringer i dokumentet.")
+
     return ReviseResponse(message=message, updated_document=updated_document)
 
 
@@ -528,9 +659,154 @@ def knowledge_chat(request: KnowledgeChatRequest) -> KnowledgeChatResponse:
 
     from app.kb.kb_reader import search_kb, split_front_matter
 
+    def _is_kb_doc_count_question(text: str) -> bool:
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        # Norwegian + a bit of English phrasing.
+        patterns = [
+            r"\bhvor\s+mange\s+dokument(er|er\s+har\s+du)?\b",
+            r"\bhvor\s+mange\s+filer\b",
+            r"\bantall\s+dokument\b",
+            r"\bantall\s+filer\b",
+            r"\bhow\s+many\s+documents\b",
+            r"\bnumber\s+of\s+documents\b",
+        ]
+        return any(re.search(p, t) for p in patterns)
+
+    def _is_kb_doc_list_question(text: str) -> bool:
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+
+        # Keep this conservative to avoid hijacking regular informational questions.
+        patterns = [
+            r"\bhvilke\s+dokument(er)?\s+har\s+du\b",
+            r"\bhvilke\s+filer\s+har\s+du\b",
+            r"\bhva\s+slags\s+dokument(er)?\s+har\s+du\b",
+            r"\bkan\s+du\s+liste\s+(opp\s+)?dokument(ene|er)\b",
+            r"\bkan\s+du\s+liste\s+(opp\s+)?fil(ene|er)\b",
+            r"\bvis\s+(meg\s+)?(alle\s+)?dokument(ene|er)\b",
+            r"\bvis\s+(meg\s+)?(alle\s+)?fil(ene|er)\b",
+            r"\blist\s+(all\s+)?documents\b",
+            r"\bwhich\s+documents\s+do\s+you\s+have\b",
+        ]
+        return any(re.search(p, t) for p in patterns)
+
+    def _kb_doc_count_answer(category: Optional[str]) -> str:
+        from app.kb.kb_reader import kb_stats
+
+        def indexed_vector_doc_count() -> int | None:
+            """Count unique documents in the vector DB (grouped by metadata.path)."""
+
+            try:
+                from app.vector_store.chroma_store import ChromaVectorStore
+                from app.vector_store.config import load_vector_store_config
+            except Exception:
+                return None
+
+            try:
+                cfg = load_vector_store_config()
+                store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
+                by_path: set[str] = set()
+                batch_size = 5000
+                cursor = 0
+                while True:
+                    res = store.get(limit=batch_size, offset=cursor, include=["metadatas"])
+                    ids = res.get("ids") or []
+                    metas = res.get("metadatas") or []
+                    if not ids:
+                        break
+                    for meta in metas:
+                        if isinstance(meta, dict):
+                            p = str(meta.get("path") or "").strip()
+                            if p:
+                                by_path.add(p)
+                    cursor += len(ids)
+                    if len(ids) < batch_size:
+                        break
+                return len(by_path)
+            except Exception:
+                return None
+
+        total, by_cat = kb_stats()
+        wanted = (category or "").strip()
+        if wanted and wanted != "All":
+            count = by_cat.get(wanted, 0)
+            return (
+                f"Jeg har {count} dokument(er) i kategorien '{wanted}' i kunnskapsbanken. "
+                "(Tellingen er basert på markdown-filer i kunnskapsbasen.)"
+            )
+
+        # Default: All
+        # Sort categories by count desc for a stable, useful summary.
+        parts = [f"Jeg har {total} fil(er) i kunnskapsbanken (råfiler)."]
+
+        indexed = indexed_vector_doc_count()
+        if indexed is not None and indexed != total:
+            parts.append(f"Indeksert i vector DB: {indexed} fil(er).")
+            parts.append("Hvis dette avviker, kjør reindeksering for å synkronisere.")
+        if by_cat:
+            top = sorted(by_cat.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+            cats = "; ".join([f"{name}: {cnt}" for name, cnt in top])
+            parts.append(f"Fordelt på kategorier: {cats}.")
+        parts.append("(Tellingen er basert på markdown-filer i kunnskapsbasen.)")
+        return " ".join(parts)
+
+    def _kb_doc_list_answer(category: Optional[str]) -> str:
+        # Import locally to avoid startup costs if endpoint isn't used.
+        from app.kb.kb_reader import iter_kb_markdown_files, doc_metadata, read_text_best_effort, kb_raw_root
+
+        wanted = (category or "").strip()
+        wanted_norm = wanted if wanted and wanted != "All" else ""
+
+        root = kb_raw_root().resolve()
+        items: list[tuple[str, str, str]] = []  # (title, kb_path, category)
+
+        for p in iter_kb_markdown_files():
+            try:
+                raw = read_text_best_effort(p, max_chars=60_000)
+            except OSError:
+                continue
+            kb_path = p.resolve().relative_to(root).as_posix()
+            title, cat, _author, _date, _body = doc_metadata(raw, kb_path=kb_path)
+            if wanted_norm and cat != wanted_norm:
+                continue
+            items.append((title, kb_path, cat))
+
+        total = len(items)
+        # Lowkey: show only a small sample.
+        max_show = 8
+        shown = items[:max_show]
+        remaining = max(0, total - len(shown))
+
+        if wanted_norm:
+            header = f"Jeg har {total} dokument(er) i kategorien '{wanted_norm}'."
+        else:
+            header = f"Jeg har {total} dokument(er) i kunnskapsbanken."
+
+        if total == 0:
+            return header
+
+        lines: list[str] = [header, "Her er et lite utvalg:"]
+        for title, kb_path, cat in shown:
+            # Keep it short but still actionable.
+            cat_part = f" ({cat})" if not wanted_norm else ""
+            lines.append(f"- {title}{cat_part} — {kb_path}")
+        if remaining:
+            lines.append(f"… og {remaining} til.")
+        return "\n".join(lines)
+
     msg = (request.message or "").strip()
     if not msg:
         return KnowledgeChatResponse(answer="Skriv et spørsmål, så kan jeg prøve å finne svaret i kunnskapsbanken.", sources=[])
+
+    # Deterministic handling of meta-questions to avoid hallucinating KB inventory.
+    if _is_kb_doc_count_question(msg):
+        return KnowledgeChatResponse(answer=_kb_doc_count_answer(request.category), sources=[])
+
+    if _is_kb_doc_list_question(msg):
+        return KnowledgeChatResponse(answer=_kb_doc_list_answer(request.category), sources=[])
 
     vector_sources, vector_excerpts, vector_error = _vector_retrieve(msg, request.category, limit=3)
 
@@ -558,6 +834,7 @@ def knowledge_chat(request: KnowledgeChatRequest) -> KnowledgeChatResponse:
 
         for d in docs:
             front, body = split_front_matter(d.content)
+
             excerpt = (body or "").strip()
             excerpt = re.sub(r"\n{3,}", "\n\n", excerpt)
             excerpt = excerpt[:1500]
@@ -604,5 +881,8 @@ def knowledge_chat(request: KnowledgeChatRequest) -> KnowledgeChatResponse:
 
     if not answer:
         answer = "Jeg fikk ikke et svar fra modellen akkurat nå. Prøv igjen."
+
+    # Enforce Norwegian for the chat-visible answer.
+    answer = _force_norwegian_message(answer, default="Jeg fant ikke et sikkert svar i kildene i kunnskapsbanken.")
 
     return KnowledgeChatResponse(answer=answer, sources=sources)

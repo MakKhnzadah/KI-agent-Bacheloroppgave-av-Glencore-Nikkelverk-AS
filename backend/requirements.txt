@@ -7,3 +7,5 @@ PyYAML==6.0.2
 requests==2.32.3
 posthog==3.5.0
 python-docx==1.1.2
+fpdf2==2.8.3
+docx2pdf==0.1.8

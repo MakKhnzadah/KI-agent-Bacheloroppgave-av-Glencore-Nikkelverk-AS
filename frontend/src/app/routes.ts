@@ -5,6 +5,7 @@ import { UploadPage } from "@/app/pages/upload-page";
 import { QueuePage } from "@/app/pages/queue-page";
 import { KnowledgeBankPage } from "@/app/pages/knowledge-bank-page";
 import { DocumentDetailPage } from "@/app/pages/document-detail-page";
+import { VectorDbPage } from "@/app/pages/vector-db-page";
 import { ErrorBoundary } from "@/app/components/error-boundary";
 
 export const router = createBrowserRouter([
@@ -36,6 +37,11 @@ export const router = createBrowserRouter([
   {
     path: "/knowledge-bank",
     Component: KnowledgeBankPage,
+    ErrorBoundary: ErrorBoundary,
+  },
+  {
+    path: "/files",
+    Component: VectorDbPage,
     ErrorBoundary: ErrorBoundary,
   },
   {

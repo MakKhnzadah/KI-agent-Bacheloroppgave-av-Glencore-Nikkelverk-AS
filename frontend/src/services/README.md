@@ -138,31 +138,15 @@ const stats = await knowledgeService.getCategoryStats();
 
 ---
 
-## 🔄 Migration to Backend
+## 🔄 Backend Status
 
-Each service method has commented-out code showing the future backend implementation:
+Services are connected to FastAPI endpoints and return typed responses to the UI.
 
-```typescript
-// Current (Mock):
-async getAllDocuments(): Promise<Document[]> {
-  await this.simulateDelay(300);
-  return [...mockDocuments];
-}
-
-// Future (Real API):
-async getAllDocuments(): Promise<Document[]> {
-  const response = await fetch('/api/documents', {
-    headers: { 'Authorization': `Bearer ${token}` }
-  });
-  return await response.json();
-}
-```
-
-### Migration Steps:
+### Completed Steps:
 
 1. ✅ Set up backend API endpoints
-2. ✅ Replace mock implementation with fetch calls
-3. ✅ Add proper error handling
+2. ✅ Use API client/fetch for service operations
+3. ✅ Add error handling paths
 4. ✅ Add loading states in components
 5. ✅ Test with real backend
 
@@ -182,7 +166,6 @@ async getAllDocuments(): Promise<Document[]> {
 ## 📦 Related Files
 
 - **Types**: `/src/types/` - TypeScript interfaces
-- **Mock Data**: `/src/data/mock-documents.ts` - Development data
 - **Context**: `/src/app/context/` - React Context for state management
 
 ---
@@ -192,7 +175,7 @@ async getAllDocuments(): Promise<Document[]> {
 ```
 1. User enters credentials
 2. authService.login(credentials)
-3. Service validates (mock) or calls API (future)
+3. Service calls auth API and validates response
 4. Token + User saved to localStorage
 5. authService.isAuthenticated() returns true
 6. Protected routes accessible
@@ -203,7 +186,7 @@ async getAllDocuments(): Promise<Document[]> {
 ## 📊 Data Flow
 
 ```
-Component → Service → Mock Data (now) / API (future) → Service → Component
+Component → Service → API → Service → Component
 ```
 
 ---
@@ -213,6 +196,5 @@ Component → Service → Mock Data (now) / API (future) → Service → Compone
 1. Connect components to services (replace context direct access)
 2. Add loading states to UI
 3. Add error handling
-4. Implement backend API
-5. Update service implementations
-6. Remove mock data imports
+4. Expand API coverage for any new features
+5. Keep service contracts aligned with backend responses

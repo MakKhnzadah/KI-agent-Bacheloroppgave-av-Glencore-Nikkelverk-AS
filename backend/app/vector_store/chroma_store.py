@@ -82,3 +82,41 @@ class ChromaVectorStore:
                 where=where,
                 include=["documents", "metadatas", "distances"],
             )
+
+    def get(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        where: Optional[Dict[str, Any]] = None,
+        include: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        include = include or ["metadatas"]
+
+        try:
+            return self._collection.get(
+                limit=limit,
+                offset=offset,
+                where=where,
+                include=include,
+            )
+        except InvalidCollectionException:
+            self._collection = self._client.get_or_create_collection(name=self.collection_name)
+            return self._collection.get(
+                limit=limit,
+                offset=offset,
+                where=where,
+                include=include,
+            )
+
+    def delete(
+        self,
+        *,
+        where: Optional[Dict[str, Any]] = None,
+        ids: Optional[List[str]] = None,
+    ) -> None:
+        try:
+            self._collection.delete(where=where, ids=ids)
+        except InvalidCollectionException:
+            self._collection = self._client.get_or_create_collection(name=self.collection_name)
+            self._collection.delete(where=where, ids=ids)

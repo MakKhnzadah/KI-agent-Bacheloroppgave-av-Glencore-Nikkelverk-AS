@@ -12,7 +12,6 @@ export function UploadPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -46,7 +45,7 @@ export function UploadPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!selectedFile || !title || !category) return;
+    if (!selectedFile || !category) return;
 
     setIsUploading(true);
     setUploadProgress(5);
@@ -60,14 +59,13 @@ export function UploadPage() {
     try {
       await addDocument({
         file: selectedFile,
-        title: title,
         category: category as any,
         uploadedBy: user?.name || "Ukjent bruker",
       });
 
       setUploadProgress(100);
       setUploadComplete(true);
-      showToast("Dokument lastet opp. Forslaget er klart for gjennomgang.", "success");
+      showToast("Dokument lastet opp. KI lager forslaget i bakgrunnen (kan ta litt tid) – sjekk Godkjenninger om litt.", "success");
 
       // Short pause so users can see completion state before redirect.
       window.setTimeout(() => {
@@ -133,7 +131,7 @@ export function UploadPage() {
                           <div className="flex items-start gap-2">
                             <span className="text-[#00AFAA] font-semibold text-xs mt-0.5">✓</span>
                             <p className="text-xs text-[#000000]">
-                              <span className="font-semibold">Godkjent AI-versjon:</span> Lagrer KI-forbedret dokument
+                              <span className="font-semibold">Godkjent KI-versjon:</span> Lagrer KI-forbedret dokument
                             </p>
                           </div>
                           <div className="flex items-start gap-2">
@@ -159,7 +157,7 @@ export function UploadPage() {
 
                 <div className="border border-[#000000]/20 rounded-lg p-8">
                   <h2 className="text-lg font-semibold text-[#000000] mb-2">Last opp dokumenter</h2>
-                  <p className="text-sm text-[#000000] mb-6">Last opp PDF, DOCX eller tekstfiler for AI-analyse</p>
+                  <p className="text-sm text-[#000000] mb-6">Last opp PDF, DOCX eller tekstfiler for KI-analyse</p>
                   
                   <div
                     onDrop={handleDrop}
@@ -249,17 +247,7 @@ export function UploadPage() {
                     Støttede formater: PDF, DOCX, TXT (maks 10MB)
                   </p>
 
-                  <div className="grid grid-cols-2 gap-4 mb-6">
-                    <div>
-                      <label className="block text-sm font-semibold text-[#000000] mb-2">Tittel</label>
-                      <input
-                        type="text"
-                        placeholder="Skriv inn tittel"
-                        value={title}
-                        onChange={(e) => setTitle(e.target.value)}
-                        className="w-full px-4 py-2.5 border border-[#000000]/20 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#00AFAA] focus:border-transparent"
-                      />
-                    </div>
+                  <div className="grid grid-cols-1 gap-4 mb-6">
                     <div>
                       <label className="block text-sm font-semibold text-[#000000] mb-2">Kategori</label>
                       <select
@@ -275,6 +263,12 @@ export function UploadPage() {
                       </select>
                     </div>
                   </div>
+
+                  {selectedFile && (
+                    <p className="text-xs text-[#000000]/70 mb-6">
+                      Tittel settes automatisk fra filnavn nå, og kan endres senere før godkjenning.
+                    </p>
+                  )}
 
                   <form onSubmit={handleSubmit}>
                     <button 

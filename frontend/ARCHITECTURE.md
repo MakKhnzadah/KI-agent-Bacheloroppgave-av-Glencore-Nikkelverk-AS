@@ -23,8 +23,6 @@ src/
 │   └── document.ts      # TypeScript interfaces for data
 ├── services/             # Business Logic Layer
 │   └── documentService.ts # API and data processing logic
-├── data/                 # Mock Data Layer
-│   └── mock-documents.ts # Development seed data
 └── styles/               # Styling Layer
     ├── theme.css        # Design tokens
     └── tailwind.css     # Framework imports
@@ -51,10 +49,7 @@ src/
 Provides central type definitions (`Document`, `User`, `Activity`) used throughout the app. This ensures strict type safety and better developer experience through IDE IntelliSense.
 
 ### 2. Services Layer (`/src/services/`)
-Decouples business logic from the UI. Components call these services for data operations, making it easy to swap mock data for a real backend API in the future without changing the UI code.
-
-### 3. Data Layer (`/src/data/`)
-Contains mock JSON/TypeScript data used for development. This allows frontend development to proceed independently of backend progress.
+Decouples business logic from the UI. Components call these services for data operations via real backend API endpoints.
 
 ---
 
@@ -63,16 +58,13 @@ Contains mock JSON/TypeScript data used for development. This allows frontend de
 The app uses a **Service-Context** pattern:
 1. **Pages** interact with **Context** hooks (e.g., `useDocuments`).
 2. **Context** providers call **Services** to perform actions.
-3. **Services** currently fetch from **Mock Data** but are ready to be updated with `fetch()` calls to a real API.
+3. **Services** call backend endpoints (`/workflow`, `/api/auth`, `/api/activities`) and return typed data to UI state.
 
 ---
 
 ## 🚀 Backend Integration
 
-The system is designed for a seamless backend transition:
-- **Phase 1 (Current)**: Services return hardcoded data wrapped in Promises to simulate network latency.
-- **Phase 2 (Migration)**: Replace service logic with real `fetch` or `axios` calls to `/api/` endpoints.
-- **Phase 3 (Final)**: Remove the `/src/data` folder and switch to live database storage.
+The frontend is integrated with FastAPI endpoints for authentication, document workflow, vector search, and activity feed.
 
 ---
 
@@ -87,6 +79,6 @@ The system is designed for a seamless backend transition:
 
 ---
 
-**Last Updated**: March 15, 2026  
+**Last Updated**: April 17, 2026  
 **Version**: 1.1.0  
-**Status**: ✅ Production Ready (Mock)
+**Status**: ✅ Production Ready (API-integrated)

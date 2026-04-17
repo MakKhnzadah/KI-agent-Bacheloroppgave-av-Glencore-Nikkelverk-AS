@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Sidebar } from "@/app/components/sidebar";
 import { Send, Sparkles, FileText, ExternalLink, User, Plus, MessageSquare, Filter } from "lucide-react";
 import { documentService } from "@/services";
+import { useAuth } from "@/app/context/auth-context";
 import { getAuthPermissionErrorMessage } from "@/utils/auth-errors";
+import { getKnowledgeChatStorageKey, safeParseJson } from "@/utils/chat-storage";
 
 interface Source {
   id: string;
@@ -29,6 +31,7 @@ interface ChatSession {
 }
 
 export function KnowledgeBankPage() {
+  const { user } = useAuth();
   const [chatMessage, setChatMessage] = useState("");
   const [selectedDocument, setSelectedDocument] = useState<Source | null>(null);
   const [selectedDocumentContent, setSelectedDocumentContent] = useState<string>("");
@@ -40,21 +43,70 @@ export function KnowledgeBankPage() {
   const [kbTotalCount, setKbTotalCount] = useState<number>(0);
   const [kbCountsByCategory, setKbCountsByCategory] = useState<Record<string, number>>({});
   
-  const [chatSessions, setChatSessions] = useState<ChatSession[]>([
-    {
-      id: "1",
-      title: "Ny samtale",
-      timestamp: new Date().toISOString(),
-      category: "All",
-      messages: [
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+
+  useEffect(() => {
+    if (!user?.email) {
+      setChatSessions([]);
+      setCurrentSessionId("1");
+      setSelectedCategory("All");
+      return;
+    }
+
+    const key = getKnowledgeChatStorageKey(user.email);
+    const fallback: { currentSessionId: string; selectedCategory: string; sessions: ChatSession[] } = {
+      currentSessionId: "1",
+      selectedCategory: "All",
+      sessions: [
         {
-          role: "bot",
-          message: "Hei! Jeg er KI-assistenten for Glencore Nikkelverk. Jeg kan hjelpe deg med å analysere dokumenter, svare på spørsmål om prosesser, og foreslå oppdateringer til kunnskapsbanken. Hva kan jeg hjelpe deg med i dag?",
+          id: "1",
+          title: "Ny samtale",
           timestamp: new Date().toISOString(),
+          category: "All",
+          messages: [
+            {
+              role: "bot",
+              message:
+                "Hei! Jeg er KI-assistenten for Glencore Nikkelverk. Jeg kan hjelpe deg med å analysere dokumenter, svare på spørsmål om prosesser, og foreslå oppdateringer til kunnskapsbanken. Hva kan jeg hjelpe deg med i dag?",
+              timestamp: new Date().toISOString(),
+            },
+          ],
         },
       ],
-    },
-  ]);
+    };
+
+    try {
+      const raw = localStorage.getItem(key);
+      const parsed = safeParseJson(raw, fallback);
+      const sessions = Array.isArray(parsed.sessions) && parsed.sessions.length > 0 ? parsed.sessions : fallback.sessions;
+      setChatSessions(sessions);
+      setCurrentSessionId(parsed.currentSessionId || sessions[0].id);
+      setSelectedCategory(parsed.selectedCategory || sessions[0].category || "All");
+    } catch {
+      setChatSessions(fallback.sessions);
+      setCurrentSessionId(fallback.currentSessionId);
+      setSelectedCategory(fallback.selectedCategory);
+    }
+  }, [user?.email]);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    if (!chatSessions.length) return;
+
+    const key = getKnowledgeChatStorageKey(user.email);
+    try {
+      localStorage.setItem(
+        key,
+        JSON.stringify({
+          currentSessionId,
+          selectedCategory,
+          sessions: chatSessions,
+        }),
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [chatSessions, currentSessionId, selectedCategory, user?.email]);
 
   const currentSession = chatSessions.find(s => s.id === currentSessionId);
   const chatHistory = currentSession?.messages || [];
@@ -161,6 +213,11 @@ export function KnowledgeBankPage() {
       timestamp: new Date().toISOString(),
     };
 
+    const sessionSnapshot = chatSessions.find((s) => s.id === currentSessionId);
+    const historyForRequest = [...(sessionSnapshot?.messages || []), newUserMessage]
+      .slice(-8)
+      .map((m) => ({ role: m.role, message: m.message }));
+
     // Update current session with user message
     setChatSessions(prev => prev.map(session => {
       if (session.id === currentSessionId) {
@@ -178,13 +235,10 @@ export function KnowledgeBankPage() {
 
     void (async () => {
       try {
-        const session = chatSessions.find((s) => s.id === currentSessionId);
-        const history = (session?.messages || []).slice(-8).map((m) => ({ role: m.role, message: m.message }));
-
         const res = await documentService.askKnowledgeBank({
           message: userMessage,
           category: selectedCategory === "All" ? undefined : selectedCategory,
-          history,
+          history: historyForRequest,
         });
 
         const aiMessage: ChatMessage = {

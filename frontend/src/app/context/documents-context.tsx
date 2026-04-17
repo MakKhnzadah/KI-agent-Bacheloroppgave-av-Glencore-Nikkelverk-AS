@@ -8,6 +8,8 @@ export interface Document {
   category: string;
   status: "pending" | "approved" | "rejected";
   isProcessing?: boolean;
+  generationMode?: "ai" | "fallback";
+  generationReason?: string;
   uploadedBy: string;
   uploadedAt: string;
   originalContent: string;
@@ -19,7 +21,7 @@ interface DocumentsContextType {
   documents: Document[];
   addDocument: (doc: {
     file: File;
-    title: string;
+    title?: string;
     category: string;
     uploadedBy: string;
   }) => Promise<void>;
@@ -60,7 +62,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     void loadDocuments(true);
   }, [loadDocuments]);
 
-  // Poll while any uploaded suggestion is still being processed by AI.
+  // Poll while any uploaded suggestion is still being processed by KI.
   useEffect(() => {
     const hasProcessing = documents.some((doc) => doc.isProcessing);
     if (!hasProcessing) {
@@ -74,7 +76,7 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(id);
   }, [documents, loadDocuments]);
 
-  const addDocument = async (doc: { file: File; title: string; category: string; uploadedBy: string }) => {
+  const addDocument = async (doc: { file: File; title?: string; category: string; uploadedBy: string }) => {
     try {
       const newDoc = await documentService.uploadDocument({
         file: doc.file,

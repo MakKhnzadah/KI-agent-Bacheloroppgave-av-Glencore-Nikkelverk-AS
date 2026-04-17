@@ -31,7 +31,7 @@ export function LoginPage() {
           <div className="w-[195px] mx-auto mb-6">
             <img src="/assets/glencore-logo.svg" className="w-full h-auto" alt="Glencore Logo" />
           </div>
-          <p className="text-xs text-[#000000]">Kunnskapsbank & AI-Agent</p>
+          <p className="text-xs text-[#000000]">Kunnskapsbank & KI-agent</p>
         </div>
 
         <div className="bg-white rounded-lg p-10 w-full border border-[#000000]/10">

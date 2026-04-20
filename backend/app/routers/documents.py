@@ -7,8 +7,10 @@ import os
 import re
 import uuid
 from pathlib import Path
+import yaml
+from yaml import YAMLError
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
 from app.ai_services.agent_service import AgentService
 from app.ai_services.ollama_provider import OllamaProvider
@@ -31,6 +33,15 @@ llm_provider = OllamaProvider()
 agent = AgentService(llm_provider)
 
 _FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_UPLOAD_CATEGORY_MAP = {
+    "sikkerhet": "Sikkerhet",
+    "vedlikehold": "Vedlikehold",
+    "miljo": "Miljø",
+    "miljø": "Miljø",
+    "kvalitet": "Kvalitet",
+    "prosedyre": "Prosedyre",
+    "annet": "Annet",
+}
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -48,6 +59,61 @@ def _sanitize_filename(name: str) -> str:
     if not name:
         return "upload"
     return name[:180]
+
+
+def _normalize_selected_category(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    mapped = _UPLOAD_CATEGORY_MAP.get(raw.lower())
+    if mapped:
+        return mapped
+    return None
+
+
+def _split_front_matter(doc: str) -> tuple[dict, str]:
+    text = (doc or "").lstrip("\ufeff")
+    if not text.startswith("---\n"):
+        return {}, doc
+
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0] != "---\n":
+        return {}, doc
+
+    end_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end_idx = i
+            break
+    if end_idx is None:
+        return {}, doc
+
+    front_raw = "".join(lines[1:end_idx])
+    body = "".join(lines[end_idx + 1 :]).lstrip("\n")
+
+    try:
+        parsed = yaml.safe_load(front_raw) or {}
+        if isinstance(parsed, dict):
+            return parsed, body
+    except YAMLError:
+        pass
+    return {}, doc
+
+
+def _apply_selected_category(suggestion_text: str, selected_category: str | None) -> str:
+    if not selected_category:
+        return suggestion_text
+
+    front, body = _split_front_matter(suggestion_text)
+    if front:
+        front_out = dict(front)
+        front_out["category"] = selected_category
+        rendered_front = yaml.safe_dump(front_out, allow_unicode=True, sort_keys=False).strip()
+        return f"---\n{rendered_front}\n---\n\n{(body or '').lstrip()}"
+
+    # If the draft has no front matter, inject minimal metadata so category persists.
+    rendered_front = yaml.safe_dump({"category": selected_category}, allow_unicode=True, sort_keys=False).strip()
+    return f"---\n{rendered_front}\n---\n\n{(suggestion_text or '').lstrip()}"
 
 
 def _insert_activity(
@@ -68,7 +134,12 @@ def _insert_activity(
     )
 
 
-def _generate_suggestion_async(suggestion_id: str, original_filename: str, processed_text: str) -> None:
+def _generate_suggestion_async(
+    suggestion_id: str,
+    original_filename: str,
+    processed_text: str,
+    selected_category: str | None = None,
+) -> None:
     """Generate revised suggestion in background and update the existing row."""
 
     try:
@@ -100,12 +171,14 @@ def _generate_suggestion_async(suggestion_id: str, original_filename: str, proce
             extracted_text=processed_text,
             llm_options={},
         )
+        suggestion_text = _apply_selected_category(suggestion_text, selected_category)
         fallback_used = int(bool(diag.get("fallback_used")))
         generation_reason = diag.get("reason")
         generation_error = diag.get("error")
     except Exception as exc:
         logger.exception("Background suggestion generation failed for %s", suggestion_id)
         suggestion_text = fallback_structured_document_short(original_filename, processed_text)
+        suggestion_text = _apply_selected_category(suggestion_text, selected_category)
         fallback_used = 1
         generation_reason = generation_reason or f"exception:{type(exc).__name__}"
         generation_error = f"exception_in_generation:{type(exc).__name__}:{exc}"
@@ -148,7 +221,11 @@ def _generate_suggestion_async(suggestion_id: str, original_filename: str, proce
 
 
 @router.post("/upload")
-async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    category: str | None = Form(default=None),
+):
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
 
@@ -178,6 +255,7 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
         raise HTTPException(status_code=400, detail=str(exc))
 
     extracted_is_empty = is_effectively_empty(processed_text)
+    selected_category = _normalize_selected_category(category)
 
     normalized_id = str(uuid.uuid4())
     normalized_sha256 = _sha256_text(processed_text)
@@ -188,6 +266,7 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
         if extracted_is_empty
         else fallback_structured_document_short(original_filename, processed_text)
     )
+    fallback_suggestion = _apply_selected_category(fallback_suggestion, selected_category)
 
     initial_model = (llm_provider.model or "").strip() or None
     generation_status = "queued" if not extracted_is_empty else "skipped"
@@ -256,7 +335,13 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
         raise HTTPException(status_code=500, detail=f"Failed to persist workflow data: {exc}")
 
     if not extracted_is_empty:
-        background_tasks.add_task(_generate_suggestion_async, suggestion_id, original_filename, processed_text)
+        background_tasks.add_task(
+            _generate_suggestion_async,
+            suggestion_id,
+            original_filename,
+            processed_text,
+            selected_category,
+        )
 
     processing = not extracted_is_empty
 

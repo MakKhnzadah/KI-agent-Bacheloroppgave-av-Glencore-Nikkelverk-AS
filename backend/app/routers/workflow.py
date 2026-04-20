@@ -1213,6 +1213,15 @@ def apply_suggestion(
         suggestion_text = row["suggestion_json"]
 
     front, body = _split_front_matter(suggestion_text)
+
+    # Applied KB entries should not expose internal review workflow metadata.
+    suggestion_text_for_kb = suggestion_text
+    if front:
+        front_for_kb = dict(front)
+        front_for_kb.pop("review_status", None)
+
+        rendered_front = yaml.safe_dump(front_for_kb, allow_unicode=True, sort_keys=False).strip()
+        suggestion_text_for_kb = f"---\n{rendered_front}\n---\n\n{(body or '').lstrip()}"
     derived_id = str(front.get("id") or "").strip()
     derived_title = str(front.get("title") or "").strip()
     base_name = derived_id or _slugify(derived_title)
@@ -1233,8 +1242,7 @@ def apply_suggestion(
             detail=f"KB file already exists: {kb_file.as_posix()}. Provide 'kb_path' to choose a different file.",
         )
 
-    # Write the suggestion as-is (YAML front matter + Markdown body).
-    kb_file.write_text(suggestion_text.rstrip() + "\n", encoding="utf-8")
+    kb_file.write_text(suggestion_text_for_kb.rstrip() + "\n", encoding="utf-8")
 
     change_id = str(uuid.uuid4())
 
@@ -1247,8 +1255,8 @@ def apply_suggestion(
             (change_id, suggestion_id, kb_file.as_posix(), request.notes),
         )
         conn.execute(
-            "UPDATE suggestions SET status = ?, target_kb_path = ? WHERE suggestion_id = ?",
-            ("applied", kb_file.as_posix(), suggestion_id),
+            "UPDATE suggestions SET status = ?, target_kb_path = ?, suggestion_json = ? WHERE suggestion_id = ?",
+            ("applied", kb_file.as_posix(), suggestion_text_for_kb, suggestion_id),
         )
         _insert_activity(
             conn,

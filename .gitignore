@@ -37,4 +37,5 @@ coverage/
 
 node_modules/
 dist/
-.vite/
+.vite/backend/venv.zip
+venv/

@@ -372,6 +372,7 @@ class DocumentService {
   }): Promise<Document> {
     const form = new FormData();
     form.append("file", params.file);
+    if (params.category) form.append("category", params.category);
 
     const res = await apiClient.postForm<UploadResponse>("/documents/upload", form);
 
@@ -388,7 +389,7 @@ class DocumentService {
       fileName: params.file.name,
       category,
       status: normalizeStatus(res.status),
-      isProcessing: (res.processing ?? (res.model === PROCESSING_MODEL_MARKER) ?? true),
+      isProcessing: (res.processing ?? (res.model === PROCESSING_MODEL_MARKER)),
       uploadedBy: params.uploadedBy || "Ukjent bruker",
       uploadedAt: formattedDate,
       originalContent: "",

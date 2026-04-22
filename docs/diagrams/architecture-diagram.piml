@@ -1,0 +1,59 @@
+@startuml
+' Simplified architecture diagram for AI-assisted Knowledge Bank system
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+left to right direction
+
+title Glencore Knowledge Bank - Simplified Architecture
+
+actor "Employee / Expert Reviewer" as User
+
+node "Frontend (React + Vite)" as FE {
+  component "Web App UI" as FE_UI
+}
+
+node "Backend API (FastAPI)" as BE {
+  component "Auth API" as B_Auth
+  component "Document Workflow API\n(upload, review, apply)" as B_Workflow
+  component "Knowledge Chat API\n(vector + fallback)" as B_Chat
+}
+
+cloud "Ollama Runtime\nlocalhost:11434" as OLLAMA
+
+database "Workflow DB (SQLite)\ndatabases/workflow/workflow.sqlite3" as DB_SQL
+folder "Uploads Storage\ndatabases/data/uploads" as FS_Uploads
+folder "Knowledge Base Raw\ndatabases/knowledge_base/raw" as FS_KB
+storage "Vector Store (Chroma)\ndatabases/vector_store/chroma" as DB_Vector
+
+User --> FE_UI : Use system
+
+FE_UI --> B_Auth : Login / refresh token
+FE_UI --> B_Workflow : Upload, review, apply
+FE_UI --> B_Chat : Ask questions
+
+B_Auth --> DB_SQL : users + sessions
+
+B_Workflow --> FS_Uploads : store uploaded files
+B_Workflow --> DB_SQL : suggestions/reviews/audit
+B_Workflow --> FS_KB : write approved docs
+B_Workflow --> DB_Vector : reindex approved docs
+B_Workflow --> OLLAMA : embeddings during indexing
+
+B_Chat --> DB_Vector : vector retrieval
+B_Chat --> FS_KB : lexical fallback
+B_Chat --> OLLAMA : final answer generation
+
+note right of B_Chat
+Knowledge chat retrieval:
+1) Vector-first (Chroma)
+2) Lexical fallback (KB files)
+end note
+
+note bottom of B_Workflow
+Apply flow triggers background reindex
+and updates reindex status for UI.
+end note
+
+@enduml

@@ -2,7 +2,7 @@
  * User Types for Glencore Knowledge Management System
  */
 
-export type UserRole = "admin" | "reviewer" | "user" | "expert" | "viewer";
+export type UserRole = "admin" | "employee" | "reviewer" | "user" | "expert" | "viewer";
 
 export interface User {
   id: string;

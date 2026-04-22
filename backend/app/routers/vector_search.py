@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Header, HTTPException
 
 from app.vector_store.config import load_vector_store_config
+from app.routers.workflow_helpers import _require_expert_user
 
 
 router = APIRouter(prefix="/vector", tags=["vector"])
@@ -65,11 +68,17 @@ def _to_kb_rel_path_from_meta(meta: dict) -> str | None:
 
 
 @router.get("/db/documents")
-def list_vector_db_documents(limit: int = 200, offset: int = 0) -> dict:
+def list_vector_db_documents(
+    limit: int = 200,
+    offset: int = 0,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> dict:
     """List unique KB documents currently stored in the Chroma vector DB.
 
     We group by `metadata.path` (one document => many chunks).
     """
+
+    _require_expert_user(authorization)
 
     limit = max(1, min(limit, 2000))
     offset = max(0, offset)
@@ -138,11 +147,16 @@ def list_vector_db_documents(limit: int = 200, offset: int = 0) -> dict:
 
 
 @router.delete("/db/documents")
-def delete_vector_db_document(kb_path: str) -> dict:
+def delete_vector_db_document(
+    kb_path: str,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> dict:
     """Delete a KB document from the vector DB.
 
     This removes all chunks whose metadata.path matches the KB markdown file.
     """
+
+    _require_expert_user(authorization)
 
     if not (kb_path or "").strip():
         raise HTTPException(status_code=400, detail="Query param 'kb_path' is required")
@@ -170,7 +184,9 @@ def delete_vector_db_document(kb_path: str) -> dict:
 
 
 @router.post("/index/kb")
-def index_knowledge_base() -> dict:
+def index_knowledge_base(authorization: Optional[str] = Header(default=None, alias="Authorization")) -> dict:
+    _require_expert_user(authorization)
+
     ChromaVectorStore, index_kb, OllamaEmbeddingClient = _load_vector_deps()
     cfg = load_vector_store_config()
     store = ChromaVectorStore(persist_dir=cfg.persist_dir, collection_name=cfg.chroma_collection)
@@ -188,7 +204,13 @@ def index_knowledge_base() -> dict:
 
 
 @router.get("/search")
-def search(q: str, k: int = 5) -> dict:
+def search(
+    q: str,
+    k: int = 5,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> dict:
+    _require_expert_user(authorization)
+
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query 'q' cannot be empty")
 

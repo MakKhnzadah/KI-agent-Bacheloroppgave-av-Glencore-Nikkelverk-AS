@@ -1,46 +1,56 @@
 @startuml
-' Workflow — AI Agent + Process Knowledge Base (MVP)
-' Covers: upload → suggest → review → apply → reindex → search
+' As-built workflow — AI Agent + Process Knowledge Base
+' Covers: auth, upload, async suggestion generation, review/apply, reindex,
+' and knowledge chat retrieval (vector-first with lexical fallback)
 
 skinparam style strictuml
 skinparam shadowing false
 
-title Project Workflow (MVP)
+title Project Workflow (As-Built)
 
 start
 
 partition "Expert User" {
-  :Select document (PDF/TXT);
-  :POST /documents/upload;
+  :POST /api/auth/login;
+  :Receive bearer token;
+  :Select document (PDF/TXT/DOCX);
+  :POST /documents/upload (multipart);
 }
 
 partition "FastAPI API" {
-  :Store raw upload on disk;
-  :Parse & normalize text;
-}
-
-partition "Ollama LLM" {
-  :Generate KB draft\n(YAML front matter + Markdown);
+  :Store upload on disk;
+  :Parse & normalize content;
+  :Insert workflow rows\n(uploads, normalized_documents, suggestions);
+  :Return suggestion_id (status=draft);
+  :Schedule background suggestion generation;
 }
 
 partition "SQLite Workflow DB" {
-  :Persist upload metadata;
-  :Persist normalized text;
-  :Persist suggestion (status=draft);
+  :Persist upload metadata + normalized text;
+  :Persist initial suggestion row;
+}
+
+partition "Background Worker" {
+  :Generate structured draft suggestion;
+  :Update suggestion_json + model;
 }
 
 partition "Expert User" {
   :GET /workflow/suggestions/{id};
+  :POST /workflow/suggestions/{id}/review\n(Authorization: Bearer ...);
   if (Approve?) then (yes)
-    :POST /workflow/suggestions/{id}/review\n{decision=approved};
+    :Decision = approved;
   else (no)
-    :POST /workflow/suggestions/{id}/review\n{decision=rejected};
+    :Decision = rejected;
     stop
   endif
 }
 
 partition "FastAPI API" {
-  :POST /workflow/suggestions/{id}/apply;
+  :Validate expert role from token;
+  :Persist review decision;
+  :POST /workflow/suggestions/{id}/apply\n(Authorization: Bearer ...);
+  :Validate expert role from token;
   :Validate status == approved;
 }
 
@@ -51,9 +61,11 @@ partition "Raw KB (Markdown + YAML)" {
 partition "SQLite Workflow DB" {
   :Insert applied_changes audit row;
   :Update suggestion status=applied;
+  :Store target_kb_path;
 }
 
 partition "KB Indexer (Background Task)" {
+  :Mark reindex status = scheduled/in_progress;
   :Re-index KB files;
 }
 
@@ -66,9 +78,23 @@ partition "Chroma Vector Store" {
   :Upsert chunks + metadata;
 }
 
+partition "FastAPI API" {
+  :Update /workflow/kb/reindex-status\n(completed/failed + stats);
+}
+
 partition "Employee / Expert User" {
-  :GET /vector/search?q=...;
-  :Receive relevant KB chunks;
+  :POST /agent/knowledge-chat;
+}
+
+partition "Knowledge Chat Retrieval" {
+  :Embed user query;
+  :Vector query in Chroma;
+  if (Vector results found?) then (yes)
+    :Use vector excerpts + sources;
+  else (no)
+    :Fallback to lexical search\nin KB markdown files;
+  endif
+  :Generate grounded answer with sources;
 }
 
 stop

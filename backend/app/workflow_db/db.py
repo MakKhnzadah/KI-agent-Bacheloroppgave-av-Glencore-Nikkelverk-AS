@@ -51,7 +51,7 @@ def _migrate_users_table_for_expert_role(conn: sqlite3.Connection) -> None:
           username TEXT NOT NULL UNIQUE,
           password_hash TEXT NOT NULL,
           display_name TEXT NOT NULL,
-          role TEXT NOT NULL DEFAULT 'expert' CHECK (role IN ('admin','reviewer','user','expert')),
+                    role TEXT NOT NULL DEFAULT 'expert' CHECK (role IN ('admin','reviewer','user','expert','employee')),
           is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
           updated_at TEXT NOT NULL DEFAULT (datetime('now'))

@@ -29,7 +29,7 @@ if "@" not in DEFAULT_EMAIL:
     DEFAULT_EMAIL = "expert@glencore.com"
 DEFAULT_ROLE = os.getenv("AUTH_DEFAULT_ROLE", "expert")
 
-Role = Literal["admin", "reviewer", "user", "expert"]
+Role = Literal["admin", "reviewer", "user", "expert", "employee"]
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -155,12 +155,15 @@ def _validate_email_or_raise(value: str) -> str:
 
 
 def _row_to_user(row) -> AuthUserOut:
+    role = str(row["role"] or "").strip().lower()
+    if role in {"reviewer", "user", "viewer"}:
+        role = "employee"
     return AuthUserOut(
         id=row["id"],
         email=row["username"],
         username=row["username"],
         displayName=row["display_name"],
-        role=row["role"],
+        role=role,
     )
 
 
@@ -169,7 +172,7 @@ def _role_supported(conn, role: str) -> bool:
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
     ).fetchone()
     if table_row is None:
-        return role in {"admin", "reviewer", "user", "expert"}
+        return role in {"admin", "reviewer", "user", "expert", "employee"}
 
     create_sql = (table_row["sql"] or "").lower()
     return f"'{role}'" in create_sql
@@ -178,7 +181,10 @@ def _role_supported(conn, role: str) -> bool:
 def _ensure_default_user(conn) -> None:
     default_email = _validate_email_or_raise(DEFAULT_EMAIL)
 
-    desired_role = DEFAULT_ROLE if DEFAULT_ROLE in {"admin", "reviewer", "user", "expert"} else "expert"
+    desired_role = DEFAULT_ROLE if DEFAULT_ROLE in {"admin", "reviewer", "user", "expert", "employee"} else "expert"
+    if desired_role == "employee":
+        # Keep DB compatibility where role CHECK might still use legacy values.
+        desired_role = "reviewer"
     if not _role_supported(conn, desired_role):
         desired_role = "admin"
 
@@ -287,13 +293,7 @@ def login(payload: LoginRequest) -> LoginResponse:
         accessToken=access_token,
         refreshToken=refresh_token,
         expiresIn=ACCESS_TOKEN_TTL_SECONDS,
-        user=AuthUserOut(
-            id=user["id"],
-            email=user["username"],
-            username=user["username"],
-            displayName=user["display_name"],
-            role=user["role"],
-        ),
+        user=_row_to_user(user),
     )
 
 
@@ -397,12 +397,13 @@ def verify(authorization: Optional[str] = Header(default=None, alias="Authorizat
             )
             raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Token expired")
 
-    user = AuthUserOut(
-        id=row["uid"],
-        email=row["username"],
-        username=row["username"],
-        displayName=row["display_name"],
-        role=row["role"],
+    user = _row_to_user(
+        {
+            "id": row["uid"],
+            "username": row["username"],
+            "display_name": row["display_name"],
+            "role": row["role"],
+        }
     )
 
     return VerifyResponse(valid=True, user=user, expiresAt=_iso(access_expires))

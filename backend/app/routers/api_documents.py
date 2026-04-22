@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from app.workflow_db.db import get_connection
+from app.routers.workflow_helpers import _require_expert_user as _shared_require_expert_user
 
 router = APIRouter(prefix="/api/documents", tags=["api-documents"])
 
@@ -187,63 +187,19 @@ def _row_to_activity(row) -> ActivityOut:
     )
 
 
-def _extract_bearer_token(authorization: Optional[str]) -> str:
-    if not authorization:
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Missing Authorization header")
-
-    parts = authorization.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid Authorization header")
-
-    return parts[1].strip()
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _parse_iso(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
 def _require_expert_user(authorization: Optional[str]) -> str:
-    token = _extract_bearer_token(authorization)
-    token_hash = _hash_token(token)
-    now = datetime.now(timezone.utc)
-
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT s.id, s.access_expires_at, u.username, u.role, u.is_active
-            FROM auth_sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.access_token_hash = ?
-              AND s.revoked_at IS NULL
-            """,
-            (token_hash,),
-        ).fetchone()
-
-    if row is None:
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Invalid token")
-
-    if int(row["is_active"] or 0) != 1:
-        raise _api_error(status.HTTP_403_FORBIDDEN, "FORBIDDEN", "User is inactive")
-
-    if _parse_iso(row["access_expires_at"]) <= now:
-        raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Token expired")
-
-    if row["role"] != "expert":
-        raise _api_error(
-            status.HTTP_403_FORBIDDEN,
-            "FORBIDDEN",
-            "Insufficient role",
-            details={"requiredRole": "expert", "currentRole": row["role"]},
-        )
-
-    return row["username"]
+    try:
+        return _shared_require_expert_user(authorization)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else None
+        if detail and "error" in detail:
+            raise _api_error(
+                exc.status_code,
+                detail["error"].get("code", "FORBIDDEN"),
+                detail["error"].get("message", "Request failed"),
+                detail["error"].get("details", {}),
+            )
+        raise
 
 
 @router.get("", response_model=list[DocumentOut])

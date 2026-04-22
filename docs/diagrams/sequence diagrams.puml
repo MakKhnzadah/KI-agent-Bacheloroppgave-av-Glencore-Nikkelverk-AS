@@ -1,18 +1,20 @@
 @startuml
 
-' Sequence Diagrams — AI Agent + Process Knowledge Base (Current Implementation)
+' Sequence Diagrams — AI Agent + Process Knowledge Base (As-Built)
 
 skinparam style strictuml
 skinparam shadowing false
 
 title Seq 1: Search Knowledge (Vector Search)
 
-actor Employee
+actor "Employee / Expert User" as User
 participant "FastAPI API" as API
 participant "Ollama Embeddings" as Embeddings
 participant "Chroma Vector Store" as Chroma
+participant "KB Reader (Markdown)" as KbReader
+participant "Ollama LLM" as LLM
 
-Employee -> API : GET /vector/search?q=...
+User -> API : POST /agent/knowledge-chat
 activate API
 API -> Embeddings : embed(q)
 activate Embeddings
@@ -22,22 +24,44 @@ API -> Chroma : query(embedding, k)
 activate Chroma
 Chroma --> API : topK chunks + metadata
 deactivate Chroma
-API --> Employee : results[]
-deactivate API
 
-note right of Employee
-Expert User follows the same flow
-end note
+alt vector results found
+	API -> LLM : generate answer (with vector context)
+	activate LLM
+	LLM --> API : answer text
+	deactivate LLM
+else fallback
+	API -> KbReader : lexical search(query)
+	activate KbReader
+	KbReader --> API : lexical docs
+	deactivate KbReader
+	API -> LLM : generate answer (with lexical context)
+	activate LLM
+	LLM --> API : answer text
+	deactivate LLM
+end
+
+API --> User : answer + sources
+deactivate API
 
 
 
 newpage
 
-title Seq 2: Review Suggestions (Approve/Reject)
+title Seq 2: Review Suggestions (Approve/Reject, Auth Protected)
 
 actor "Expert User" as ExpertUser
 participant "FastAPI API" as API
 participant "SQLite Workflow DB" as DB
+
+ExpertUser -> API : POST /api/auth/login
+activate API
+API -> DB : validate user credentials
+activate DB
+DB --> API : access token
+deactivate DB
+API --> ExpertUser : bearer token
+deactivate API
 
 ExpertUser -> API : GET /workflow/suggestions/{id}
 activate API
@@ -49,8 +73,10 @@ API --> ExpertUser : suggestion
 deactivate API
 
 alt Approve
-	ExpertUser -> API : POST /workflow/suggestions/{id}/review {decision:approved}
+	ExpertUser -> API : POST /workflow/suggestions/{id}/review {decision:approved, Authorization}
 	activate API
+	API -> DB : validate expert role from auth_sessions/users
+	DB --> API : authorized
 	API -> DB : INSERT review + UPDATE suggestion.status=approved
 	activate DB
 	DB --> API : ok
@@ -58,8 +84,10 @@ alt Approve
 	API --> ExpertUser : status=approved
 	deactivate API
 else Reject
-	ExpertUser -> API : POST /workflow/suggestions/{id}/review {decision:rejected}
+	ExpertUser -> API : POST /workflow/suggestions/{id}/review {decision:rejected, Authorization}
 	activate API
+	API -> DB : validate expert role from auth_sessions/users
+	DB --> API : authorized
 	API -> DB : INSERT review + UPDATE suggestion.status=rejected
 	activate DB
 	DB --> API : ok
@@ -74,14 +102,15 @@ end
 
 newpage
 
-title Seq 3: Upload Document + Generate Draft Suggestion
+title Seq 3: Upload Document + Async Draft Suggestion Generation
 
 actor "Expert User" as ExpertUser
 participant "FastAPI API" as API
-participant "Document Sources\n(PDF / Email / Text)" as Docs
+participant "Document Sources\n(PDF / DOCX / TXT)" as Docs
 participant "Document Parser" as Parser
 participant "Ollama LLM" as LLM
 participant "SQLite Workflow DB" as DB
+participant "Background Worker" as Worker
 
 ExpertUser -> Docs : select document
 activate Docs
@@ -94,16 +123,25 @@ API -> Parser : parse + normalize
 activate Parser
 Parser --> API : normalizedText
 deactivate Parser
-API -> LLM : generate KB draft (YAML + Markdown)
-activate LLM
-LLM --> API : suggestionDraft
-deactivate LLM
-API -> DB : INSERT uploads + normalized_documents + suggestions(status=draft)
+API -> DB : INSERT uploads + normalized_documents + suggestions(status=draft, model=__processing__)
 activate DB
 DB --> API : ok
 deactivate DB
 API --> ExpertUser : upload_id + suggestion_id
 deactivate API
+
+... asynchronous background task ...
+API -> Worker : schedule _generate_suggestion_async(suggestion_id)
+activate Worker
+Worker -> LLM : generate structured draft
+activate LLM
+LLM --> Worker : suggestionDraft
+deactivate LLM
+Worker -> DB : UPDATE suggestions(suggestion_json, model)
+activate DB
+DB --> Worker : ok
+deactivate DB
+deactivate Worker
 
 
 
@@ -119,9 +157,12 @@ participant "Raw KB (Markdown + YAML)" as KB
 participant "KB Indexer" as Indexer
 participant "Ollama Embeddings" as Embeddings
 participant "Chroma Vector Store" as Chroma
+participant "Reindex Status" as Status
 
-ExpertUser -> API : POST /workflow/suggestions/{id}/apply
+ExpertUser -> API : POST /workflow/suggestions/{id}/apply (Authorization)
 activate API
+API -> DB : validate expert role from auth_sessions/users
+DB --> API : authorized
 API -> DB : check suggestion.status == approved
 activate DB
 DB --> API : ok
@@ -134,10 +175,12 @@ API -> DB : INSERT applied_changes + UPDATE suggestion.status=applied
 activate DB
 DB --> API : ok
 deactivate DB
+API -> Status : mark scheduled + run_id
 API --> ExpertUser : applied (reindex=scheduled)
 deactivate API
 
 ... background task ...
+Indexer -> Status : mark in_progress
 Indexer -> KB : read all .md
 activate KB
 KB --> Indexer : docs
@@ -150,6 +193,7 @@ Indexer -> Chroma : upsert(chunks, metadata)
 activate Chroma
 Chroma --> Indexer : ok
 deactivate Chroma
+Indexer -> Status : mark completed/failed (+stats)
 
 
 @enduml

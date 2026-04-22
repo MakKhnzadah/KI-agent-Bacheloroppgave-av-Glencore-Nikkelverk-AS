@@ -1,0 +1,57 @@
+@startuml
+title Data Flow of the Implemented AI-Assisted Knowledge System
+
+skinparam style strictuml
+skinparam shadowing false
+top to bottom direction
+
+skinparam rectangle {
+  RoundCorner 8
+}
+skinparam ArrowColor #2f4f4f
+skinparam ArrowThickness 1.2
+
+actor "User" as User
+
+rectangle "Upload API" as Upload
+rectangle "Parser" as Parser
+database "Workflow DB\n(SQLite)" as WFDB
+rectangle "AI Suggestion Service\n(Ollama, Async Task)" as LLM
+rectangle "Review & Approval" as Approval
+folder "Raw KB\n(Markdown + YAML)" as KB
+rectangle "KB Re-index Service" as Reindex
+rectangle "Embedding Service\n(Ollama)" as Emb
+database "Chroma Vector Store" as Chroma
+rectangle "Knowledge Chat API" as Chat
+
+User --> Upload : document
+Upload --> Parser : raw input
+Parser --> WFDB : normalized draft
+WFDB --> LLM : suggestion input
+LLM --> WFDB : updated suggestion
+WFDB --> Approval : pending suggestion
+Approval --> WFDB : decision
+Approval --> KB : approved markdown
+Approval --> Reindex : apply completed
+Reindex --> Emb : chunks
+Emb --> Chroma : vectors
+
+User --> Chat : query
+Chat --> Chroma : semantic search
+Chroma --> Chat : chunks
+Chat --> LLM : prompt + context
+LLM --> Chat : answer
+Chat --> User : answer + sources
+
+note right of WFDB
+Uploads, normalized text,
+suggestions, reviews,
+and applied changes
+end note
+
+note right of Chat
+Vector-first retrieval with
+lexical fallback when needed
+end note
+
+@enduml

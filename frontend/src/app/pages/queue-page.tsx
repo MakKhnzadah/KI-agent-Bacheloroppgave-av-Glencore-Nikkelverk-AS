@@ -195,8 +195,7 @@ export function QueuePage() {
         if (pdfByDocId[docId] !== undefined) continue;
 
         try {
-          const url = documentService.getOriginalFileUrl(docId);
-          const res = await fetch(url, { method: "HEAD" });
+          const res = await documentService.headOriginalFile(docId);
           const ct = (res.headers.get("content-type") || "").toLowerCase();
           const isPdf = res.ok && ct.includes("application/pdf");
           if (cancelled) return;
@@ -214,6 +213,52 @@ export function QueuePage() {
   }, [selectedDocId, viewRejectedDoc, pdfByDocId]);
 
   useEffect(() => {
+    const ids = [selectedDocId, viewRejectedDoc].filter(Boolean) as string[];
+    if (ids.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (const docId of ids) {
+        if (cancelled) return;
+        if (wordPdfUrlByDocId[docId] || wordPdfErrorByDocId[docId]) continue;
+        if (pdfByDocId[docId] !== true) continue;
+
+        try {
+          const res = await documentService.fetchOriginalFile(docId);
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          const contentType = (res.headers.get("content-type") || "").toLowerCase();
+          if (!contentType.includes("application/pdf")) {
+            throw new Error(`Unexpected content-type: ${contentType || "(missing)"}`);
+          }
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          if (cancelled) {
+            try {
+              URL.revokeObjectURL(objectUrl);
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          setWordPdfUrl(docId, objectUrl);
+        } catch (e) {
+          if (cancelled) return;
+          setWordPdfErrorByDocId((prev) => ({
+            ...prev,
+            [docId]: e instanceof Error ? e.message : "PDF-visning feilet",
+          }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocId, viewRejectedDoc, pdfByDocId, wordPdfUrlByDocId, wordPdfErrorByDocId]);
+
+  useEffect(() => {
     if (!selectedDocId) return;
     if (!selectedIsDocx) return;
     if (wordPdfUrlByDocId[selectedDocId] || wordPdfErrorByDocId[selectedDocId]) return;
@@ -221,8 +266,7 @@ export function QueuePage() {
     let cancelled = false;
     void (async () => {
       try {
-        const url = documentService.getOriginalFileUrl(selectedDocId, { render: "pdf" });
-        const res = await fetch(url);
+        const res = await documentService.fetchOriginalFile(selectedDocId, { render: "pdf" });
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -263,8 +307,7 @@ export function QueuePage() {
     let cancelled = false;
     void (async () => {
       try {
-        const url = documentService.getOriginalFileUrl(viewRejectedDoc, { render: "pdf" });
-        const res = await fetch(url);
+        const res = await documentService.fetchOriginalFile(viewRejectedDoc, { render: "pdf" });
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -296,6 +339,31 @@ export function QueuePage() {
       cancelled = true;
     };
   }, [viewRejectedDoc, viewedRejectedIsDocx, wordPdfUrlByDocId, wordPdfErrorByDocId]);
+
+  const openOriginalFileInNewTab = async (docId: string) => {
+    try {
+      const res = await documentService.fetchOriginalFile(docId);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const opened = window.open(objectUrl, "_blank", "noopener,noreferrer");
+      if (!opened) {
+        showToast("Kunne ikke åpne fil i ny fane.", "error");
+      }
+      window.setTimeout(() => {
+        try {
+          URL.revokeObjectURL(objectUrl);
+        } catch {
+          // ignore
+        }
+      }, 60000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Ukjent feil";
+      showToast(`Kunne ikke åpne originalfil: ${message}`, "error");
+    }
+  };
 
   useEffect(() => {
     if (!user?.email) {
@@ -852,11 +920,15 @@ export function QueuePage() {
                   <div className={selectedIsPdfLike ? "max-w-5xl mx-auto" : "max-w-4xl mx-auto"}>
                     <h4 className="text-base text-[#000000] font-semibold mb-4">{selectedDocument.title}</h4>
                     {selectedIsPdfLike ? (
-                      <iframe
-                        title={selectedDocument.fileName}
-                        src={documentService.getOriginalFileUrl(selectedDocId)}
-                        className="w-full h-[520px] border border-[#000000]/10 rounded"
-                      />
+                      selectedWordPdfUrl ? (
+                        <iframe
+                          title={selectedDocument.fileName}
+                          src={selectedWordPdfUrl}
+                          className="w-full h-[520px] border border-[#000000]/10 rounded"
+                        />
+                      ) : (
+                        <p className="text-xs text-[#000000]/70">Laster originalt dokument...</p>
+                      )
                     ) : selectedIsDocx ? (
                       selectedWordPdfUrl ? (
                         <iframe
@@ -872,14 +944,15 @@ export function QueuePage() {
                             <p className="mt-2 text-[#000000]/70">
                               Viser derfor et tekstekstrakt (innholdet er hentet ut av dokumentet og kan avvike fra original layout i Word).
                             </p>
-                            <a
+                            <button
+                              type="button"
                               className="inline-block mt-2 text-[#00AFAA] font-semibold hover:underline"
-                              href={documentService.getOriginalFileUrl(selectedDocId)}
-                              target="_blank"
-                              rel="noreferrer"
+                              onClick={() => {
+                                void openOriginalFileInNewTab(selectedDocId);
+                              }}
                             >
                               Åpne originalfil
-                            </a>
+                            </button>
                           </div>
                           {selectedDocument.originalContent ? (
                             <div className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
@@ -1074,11 +1147,15 @@ export function QueuePage() {
               <h3 className="text-lg text-[#000000] font-semibold mb-4">Original innhold</h3>
               <div className="bg-white border border-[#000000]/10 rounded-lg p-6">
                 {viewedRejectedIsPdfLike ? (
-                  <iframe
-                    title={viewedRejectedDocument.fileName}
-                    src={documentService.getOriginalFileUrl(viewedRejectedDocument.id)}
-                    className="w-full h-[420px] border border-[#000000]/10 rounded"
-                  />
+                  viewedRejectedWordPdfUrl ? (
+                    <iframe
+                      title={viewedRejectedDocument.fileName}
+                      src={viewedRejectedWordPdfUrl}
+                      className="w-full h-[420px] border border-[#000000]/10 rounded"
+                    />
+                  ) : (
+                    <p className="text-xs text-[#000000]/70">Laster originalt dokument...</p>
+                  )
                 ) : viewedRejectedIsDocx ? (
                   viewedRejectedWordPdfUrl ? (
                     <iframe
@@ -1094,14 +1171,15 @@ export function QueuePage() {
                           <p className="mt-2 text-[#000000]/70">
                             Viser derfor et tekstekstrakt (innholdet er hentet ut av dokumentet og kan avvike fra original layout i Word).
                           </p>
-                          <a
+                          <button
+                            type="button"
                             className="inline-block mt-2 text-[#00AFAA] font-semibold hover:underline"
-                            href={documentService.getOriginalFileUrl(viewedRejectedDocument.id)}
-                            target="_blank"
-                            rel="noreferrer"
+                            onClick={() => {
+                              void openOriginalFileInNewTab(viewedRejectedDocument.id);
+                            }}
                           >
                             Åpne originalfil
-                          </a>
+                          </button>
                         </div>
                         <div className="text-sm text-[#000000] leading-relaxed whitespace-pre-wrap">
                           {viewedRejectedDocument.originalContent}

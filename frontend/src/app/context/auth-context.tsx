@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { authService } from "@/services";
 import { getChatStorageKey, getKnowledgeChatStorageKey } from "@/utils/chat-storage";
+import { normalizeUserRole } from "@/utils/role-access";
 
 interface User {
   name: string;
@@ -12,7 +13,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<boolean>;
+  login: (email: string, password: string) => Promise<User | null>;
   logout: () => void;
 }
 
@@ -32,7 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return {
       name: source.name,
       initials,
-      role: source.role,
+      role: normalizeUserRole(source.role),
       email: source.email,
     };
   };
@@ -58,18 +59,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const login = async (email: string, password: string): Promise<boolean> => {
+  const login = async (email: string, password: string): Promise<User | null> => {
     if (!email || !password) {
-      return false;
+      return null;
     }
 
     const authResponse = await authService.login({ email, password });
-    setUser(mapUser({
+    const mapped = mapUser({
       name: authResponse.user.name,
       role: authResponse.user.role,
       email: authResponse.user.email,
-    }));
-    return true;
+    });
+    setUser(mapped);
+    return mapped;
   };
 
   const logout = () => {

@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from "react";
 import { documentService } from "@/services";
+import { useAuth } from "@/app/context/auth-context";
+import { canAccessExpertFeatures } from "@/utils/role-access";
 
 export interface Document {
   id: string;
@@ -38,8 +40,10 @@ interface DocumentsContextType {
 const DocumentsContext = createContext<DocumentsContextType | undefined>(undefined);
 
 export function DocumentsProvider({ children }: { children: ReactNode }) {
+  const { user, isAuthenticated } = useAuth();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const canManageWorkflow = isAuthenticated && canAccessExpertFeatures(user?.role);
 
   const loadDocuments = useCallback(async (showLoading: boolean) => {
     try {
@@ -59,11 +63,21 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
 
   // Initial load
   useEffect(() => {
+    if (!canManageWorkflow) {
+      setDocuments([]);
+      setIsLoading(false);
+      return;
+    }
+
     void loadDocuments(true);
-  }, [loadDocuments]);
+  }, [canManageWorkflow, loadDocuments]);
 
   // Poll while any uploaded suggestion is still being processed by KI.
   useEffect(() => {
+    if (!canManageWorkflow) {
+      return;
+    }
+
     const hasProcessing = documents.some((doc) => doc.isProcessing);
     if (!hasProcessing) {
       return;
@@ -74,9 +88,13 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
     }, 3000);
 
     return () => window.clearInterval(id);
-  }, [documents, loadDocuments]);
+  }, [canManageWorkflow, documents, loadDocuments]);
 
   const addDocument = async (doc: { file: File; title?: string; category: string; uploadedBy: string }) => {
+    if (!canManageWorkflow) {
+      throw new Error("Insufficient role");
+    }
+
     try {
       const newDoc = await documentService.uploadDocument({
         file: doc.file,
@@ -93,6 +111,10 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   };
 
   const loadOriginalContent = async (id: string): Promise<string> => {
+    if (!canManageWorkflow) {
+      throw new Error("Insufficient role");
+    }
+
     const existing = documents.find((d) => d.id === id);
     if (existing?.originalContent) {
       return existing.originalContent;
@@ -109,6 +131,10 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   };
 
   const approveDocument = async (id: string) => {
+    if (!canManageWorkflow) {
+      throw new Error("Insufficient role");
+    }
+
     try {
       const updatedDoc = await documentService.approveDocument(id);
       
@@ -122,6 +148,10 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   };
 
   const rejectDocument = async (id: string) => {
+    if (!canManageWorkflow) {
+      throw new Error("Insufficient role");
+    }
+
     try {
       const updatedDoc = await documentService.rejectDocument(id);
       
@@ -135,6 +165,10 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteDocument = async (id: string) => {
+    if (!canManageWorkflow) {
+      throw new Error("Insufficient role");
+    }
+
     try {
       await documentService.deleteDocument(id);
       

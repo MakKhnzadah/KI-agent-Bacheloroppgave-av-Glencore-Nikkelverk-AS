@@ -19,10 +19,20 @@ class OllamaProvider:
             self.timeout_s = 240.0
         self.timeout_s = max(30.0, min(self.timeout_s, 1800.0))
         try:
+            self.connect_timeout_s = float(os.getenv("OLLAMA_CONNECT_TIMEOUT_S", "10").strip())
+        except ValueError:
+            self.connect_timeout_s = 10.0
+        self.connect_timeout_s = max(1.0, min(self.connect_timeout_s, 60.0))
+        try:
             self.max_retries = int(os.getenv("OLLAMA_GENERATE_RETRIES", "1").strip())
         except ValueError:
             self.max_retries = 1
         self.max_retries = max(0, min(self.max_retries, 3))
+        try:
+            self.max_num_predict = int(os.getenv("OLLAMA_MAX_NUM_PREDICT", "16384").strip())
+        except ValueError:
+            self.max_num_predict = 16384
+        self.max_num_predict = max(128, min(self.max_num_predict, 16384))
 
     def _request_generate(self, prompt: str, options_override: dict | None = None) -> requests.Response:
         options = {
@@ -48,7 +58,7 @@ class OllamaProvider:
             options["num_predict"] = int(options.get("num_predict", self.num_predict))
         except Exception:
             options["num_predict"] = self.num_predict
-        options["num_predict"] = max(128, min(options["num_predict"], 16384))
+        options["num_predict"] = max(128, min(options["num_predict"], self.max_num_predict))
 
         payload = {
             "model": self.model,
@@ -62,7 +72,7 @@ class OllamaProvider:
         return requests.post(
             self.url,
             json=payload,
-            timeout=self.timeout_s,
+            timeout=(self.connect_timeout_s, self.timeout_s),
         )
 
     def generate(self, prompt: str, *, options: dict | None = None) -> str:

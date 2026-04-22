@@ -1,0 +1,44 @@
+@startuml
+title Retrieval Pipeline of the Implemented AI-Assisted Knowledge System
+
+skinparam style strictuml
+skinparam shadowing false
+top to bottom direction
+
+skinparam rectangle {
+  RoundCorner 8
+}
+skinparam ArrowColor #2f4f4f
+skinparam ArrowThickness 1.2
+
+actor "User" as User
+
+rectangle "Knowledge Chat API" as Chat
+rectangle "Query Embedding\n(Ollama)" as Emb
+database "Chroma Vector Store" as Chroma
+rectangle "Lexical Search\n(KB Reader)" as Lex
+rectangle "Context Builder" as Ctx
+rectangle "LLM Generation\n(Ollama)" as LLM
+rectangle "Answer + Sources" as Out
+
+User --> Chat : query
+
+Chat --> Emb : embed query
+Emb --> Chroma : vector search
+Chroma --> Ctx : vector chunks
+
+Chat --> Lex : fallback search
+Lex --> Ctx : lexical docs
+
+Ctx --> LLM : grounded prompt
+LLM --> Out : answer
+Chat --> Out : source metadata
+Out --> User : answer + sources
+
+note right of Chat
+Vector-first retrieval is the primary path.
+Lexical search is used when vector retrieval
+is unavailable or insufficient.
+end note
+
+@enduml

@@ -118,7 +118,20 @@ def _parse_iso(value: str) -> datetime:
     return parsed
 
 
-def _require_expert_user(authorization: Optional[str]) -> str:
+def _normalize_external_role(role: str) -> str:
+    """Normalize legacy role names for externally visible RBAC decisions."""
+
+    raw = (role or "").strip().lower()
+    if raw in {"reviewer", "user", "viewer"}:
+        return "employee"
+    return raw
+
+
+def _require_authenticated_user(
+    authorization: Optional[str],
+    *,
+    allowed_roles: Optional[set[str]] = None,
+) -> tuple[str, str]:
     token = _extract_bearer_token(authorization)
     token_hash = _hash_token(token)
     now = datetime.now(timezone.utc)
@@ -144,15 +157,21 @@ def _require_expert_user(authorization: Optional[str]) -> str:
     if _parse_iso(row["access_expires_at"]) <= now:
         raise _api_error(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Token expired")
 
-    if row["role"] != "expert":
+    current_role = _normalize_external_role(str(row["role"] or ""))
+    if allowed_roles is not None and current_role not in allowed_roles:
         raise _api_error(
             status.HTTP_403_FORBIDDEN,
             "FORBIDDEN",
             "Insufficient role",
-            details={"requiredRole": "expert", "currentRole": row["role"]},
+            details={"requiredRoles": sorted(allowed_roles), "currentRole": current_role},
         )
 
-    return row["username"]
+    return str(row["username"]), current_role
+
+
+def _require_expert_user(authorization: Optional[str]) -> str:
+    username, _ = _require_authenticated_user(authorization, allowed_roles={"expert", "admin"})
+    return username
 
 
 def _reindex_kb_to_chroma(run_id: Optional[str] = None) -> None:

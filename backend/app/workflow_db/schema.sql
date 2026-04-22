@@ -44,10 +44,22 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   display_name TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'expert' CHECK (role IN ('admin','reviewer','user','expert')),
+  role TEXT NOT NULL DEFAULT 'expert' CHECK (role IN ('admin','reviewer','user','expert','employee')),
   is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS kb_issue_reports (
+  report_id TEXT PRIMARY KEY,
+  kb_path TEXT NOT NULL,
+  message TEXT NOT NULL,
+  document_title TEXT,
+  context_excerpt TEXT,
+  reported_by TEXT NOT NULL,
+  reported_role TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'submitted',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS auth_sessions (
@@ -132,3 +144,4 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_refresh_token_hash ON auth_sessions
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_revoked_at ON auth_sessions(revoked_at);
 CREATE INDEX IF NOT EXISTS idx_suggestions_upload_id ON suggestions(upload_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_suggestion_id ON reviews(suggestion_id);
+CREATE INDEX IF NOT EXISTS idx_kb_issue_reports_kb_path ON kb_issue_reports(kb_path);

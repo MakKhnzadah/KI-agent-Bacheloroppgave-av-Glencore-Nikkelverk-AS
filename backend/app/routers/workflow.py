@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Literal, Optional
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import yaml
@@ -35,6 +35,7 @@ from app.routers.workflow_helpers import (
     _next_available_kb_path,
     _read_text_best_effort,
     _reindex_kb_to_chroma,
+    _require_authenticated_user,
     _require_expert_user,
     _resolve_kb_path,
     _shingles,
@@ -71,6 +72,46 @@ def _insert_activity(
         """,
         (str(uuid.uuid4()), activity_type, title, description, user, time_label),
     )
+
+
+def _ensure_kb_issue_reports_table(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kb_issue_reports (
+            report_id TEXT PRIMARY KEY,
+            kb_path TEXT NOT NULL,
+            message TEXT NOT NULL,
+            document_title TEXT,
+            context_excerpt TEXT,
+            reported_by TEXT NOT NULL,
+            reported_role TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'submitted',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_kb_issue_reports_kb_path
+        ON kb_issue_reports(kb_path)
+        """
+    )
+
+
+class KbIssueReportRequest(BaseModel):
+    kb_path: str
+    message: str = Field(..., min_length=5, max_length=4000)
+    document_title: Optional[str] = None
+    context_excerpt: Optional[str] = None
+
+
+class KbIssueReportResponse(BaseModel):
+    report_id: str
+    kb_path: str
+    status: Literal["submitted"]
+    reported_by: str
+    reported_role: str
+    created_at: str
 
 
 class SimilarityMatch(BaseModel):
@@ -171,7 +212,7 @@ class SuggestionResponse(BaseModel):
     generation_error: Optional[str] = None
 
 
-def _schedule_fallback_regeneration(*, background_tasks: BackgroundTasks, suggestion_id: str, upload_id: str, original_filename: str) -> None:
+def _schedule_fallback_regeneration(*, suggestion_id: str, upload_id: str, original_filename: str) -> None:
     with _fallback_regen_lock:
         # Throttle: regenerating a suggestion is expensive (LLM call). The frontend may fetch
         # many suggestions in parallel on page load, so we keep this strictly bounded.
@@ -181,7 +222,14 @@ def _schedule_fallback_regeneration(*, background_tasks: BackgroundTasks, sugges
             return
         _fallback_regen_inflight.add(suggestion_id)
 
-    background_tasks.add_task(_regenerate_suggestion_in_background, suggestion_id, upload_id, original_filename)
+    # Run as a daemon thread so server shutdown is not blocked by long LLM calls.
+    thread = threading.Thread(
+        target=_regenerate_suggestion_in_background,
+        args=(suggestion_id, upload_id, original_filename),
+        name=f"regen-{suggestion_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
 
 
 def _regenerate_suggestion_in_background(suggestion_id: str, upload_id: str, original_filename: str) -> None:
@@ -244,7 +292,13 @@ class SuggestionUpdateRequest(BaseModel):
 
 
 @router.get("/suggestions", response_model=list[SuggestionListItem])
-def list_suggestions(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0)) -> list[SuggestionListItem]:
+def list_suggestions(
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> list[SuggestionListItem]:
+    _require_expert_user(authorization)
+
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -287,7 +341,12 @@ class ApplyResponse(BaseModel):
 
 
 @router.get("/suggestions/{suggestion_id}", response_model=SuggestionResponse)
-def get_suggestion(suggestion_id: str, background_tasks: BackgroundTasks) -> SuggestionResponse:
+def get_suggestion(
+    suggestion_id: str,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> SuggestionResponse:
+    _require_expert_user(authorization)
+
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -347,7 +406,6 @@ def get_suggestion(suggestion_id: str, background_tasks: BackgroundTasks) -> Sug
                 ).fetchone()
             original_filename = (urow["original_filename"] if urow else None) or "document"
             _schedule_fallback_regeneration(
-                background_tasks=background_tasks,
                 suggestion_id=suggestion_id,
                 upload_id=row["upload_id"],
                 original_filename=original_filename,
@@ -541,12 +599,15 @@ def check_similarity_for_document(
         default=None,
         description="Optional relative path under databases/knowledge_base/raw to exclude from matching.",
     ),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> SimilarityCheckResponse:
     """Check similarity for an arbitrary Markdown document (not necessarily stored as a suggestion).
 
     This is useful for iterative editing in the UI: the user can revise a draft and re-check overlap
     against the knowledge base without persisting the draft to the workflow DB.
     """
+
+    _require_expert_user(authorization)
 
     doc = request.document or ""
     front, body = _split_front_matter(doc)
@@ -616,19 +677,28 @@ def check_similarity_for_document(
 
 
 @router.get("/kb/stats", response_model=KbStatsResponse)
-def get_kb_stats() -> KbStatsResponse:
+def get_kb_stats(authorization: Optional[str] = Header(default=None, alias="Authorization")) -> KbStatsResponse:
+    _require_authenticated_user(authorization, allowed_roles={"employee", "expert", "admin"})
+
     total, by_cat = kb_stats()
     return KbStatsResponse(total=total, by_category=by_cat)
 
 
 @router.get("/kb/reindex-status", response_model=ReindexStatusResponse)
-def get_kb_reindex_status() -> ReindexStatusResponse:
+def get_kb_reindex_status(authorization: Optional[str] = Header(default=None, alias="Authorization")) -> ReindexStatusResponse:
+    _require_expert_user(authorization)
+
     snapshot = get_reindex_status_snapshot()
     return ReindexStatusResponse(**snapshot)
 
 
 @router.get("/kb/document", response_model=KbDocumentResponse)
-def get_kb_document(kb_path: str = Query(..., description="Relative path under databases/knowledge_base/raw (e.g. 'procedures/pump-a.md').")) -> KbDocumentResponse:
+def get_kb_document(
+    kb_path: str = Query(..., description="Relative path under databases/knowledge_base/raw (e.g. 'procedures/pump-a.md')."),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> KbDocumentResponse:
+    _require_authenticated_user(authorization, allowed_roles={"employee", "expert", "admin"})
+
     try:
         doc = get_kb_doc(kb_path)
     except ValueError:
@@ -651,8 +721,11 @@ def list_kb_documents(
     limit: int = Query(default=200, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     category: Optional[str] = Query(default=None, description="Optional category filter. Use 'All' or omit for no filtering."),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> KbDocumentsListResponse:
     """List KB markdown documents from the raw knowledge base on disk."""
+
+    _require_authenticated_user(authorization, allowed_roles={"employee", "expert", "admin"})
 
     from app.kb.kb_reader import iter_kb_markdown_files, doc_metadata, read_text_best_effort, kb_raw_root
 
@@ -692,6 +765,61 @@ def list_kb_documents(
         offset=offset,
         limit=limit,
         documents=sliced,
+    )
+
+
+@router.post("/kb/issues", response_model=KbIssueReportResponse)
+def report_kb_issue(
+    payload: KbIssueReportRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> KbIssueReportResponse:
+    reported_by, reported_role = _require_authenticated_user(
+        authorization,
+        allowed_roles={"employee", "expert", "admin"},
+    )
+
+    report_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    kb_path = (payload.kb_path or "").strip()
+    if not kb_path:
+        raise HTTPException(status_code=400, detail="kb_path is required")
+
+    with get_connection() as conn:
+        _ensure_kb_issue_reports_table(conn)
+        conn.execute(
+            """
+            INSERT INTO kb_issue_reports (
+                report_id,
+                kb_path,
+                message,
+                document_title,
+                context_excerpt,
+                reported_by,
+                reported_role,
+                status,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?)
+            """,
+            (
+                report_id,
+                kb_path,
+                payload.message.strip(),
+                (payload.document_title or "").strip() or None,
+                (payload.context_excerpt or "").strip() or None,
+                reported_by,
+                reported_role,
+                created_at,
+            ),
+        )
+
+    return KbIssueReportResponse(
+        report_id=report_id,
+        kb_path=kb_path,
+        status="submitted",
+        reported_by=reported_by,
+        reported_role=reported_role,
+        created_at=created_at,
     )
 
 
@@ -758,7 +886,12 @@ def delete_kb_document(
 
 
 @router.get("/suggestions/{suggestion_id}/original", response_model=OriginalDocumentResponse)
-def get_suggestion_original(suggestion_id: str) -> OriginalDocumentResponse:
+def get_suggestion_original(
+    suggestion_id: str,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> OriginalDocumentResponse:
+    _require_expert_user(authorization)
+
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -792,11 +925,14 @@ def get_suggestion_original(suggestion_id: str) -> OriginalDocumentResponse:
 def head_suggestion_file(
     suggestion_id: str,
     render: Optional[str] = Query(default=None, description="Optional render mode. Use 'pdf' to request a PDF rendition for .docx files."),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Response:
     """HEAD variant for file downloads.
 
     Some clients (and the frontend) rely on Content-Type detection via HEAD.
     """
+
+    _require_expert_user(authorization)
 
     with get_connection() as conn:
         row = conn.execute(
@@ -843,7 +979,10 @@ def head_suggestion_file(
 def get_suggestion_file(
     suggestion_id: str,
     render: Optional[str] = Query(default=None, description="Optional render mode. Use 'pdf' to request a PDF rendition for .docx files."),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> FileResponse:
+    _require_expert_user(authorization)
+
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -1185,7 +1324,6 @@ def review_suggestion(
 def apply_suggestion(
     suggestion_id: str,
     request: ApplyRequest,
-    background_tasks: BackgroundTasks,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> ApplyResponse:
     """Apply an approved suggestion to the KB (write Markdown file + record audit row)."""
@@ -1268,7 +1406,13 @@ def apply_suggestion(
 
     # Automatically refresh the vector index after applying KB changes.
     reindex_run_id = _mark_reindex_scheduled(reason="workflow.apply_suggestion")
-    background_tasks.add_task(_reindex_kb_to_chroma, reindex_run_id)
+    thread = threading.Thread(
+        target=_reindex_kb_to_chroma,
+        args=(reindex_run_id,),
+        name=f"reindex-{reindex_run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
 
     return ApplyResponse(
         suggestion_id=suggestion_id,

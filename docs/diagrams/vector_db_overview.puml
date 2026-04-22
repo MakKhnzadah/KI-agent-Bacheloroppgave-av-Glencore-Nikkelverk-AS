@@ -1,0 +1,45 @@
+@startuml
+' Simple vector DB overview for report usage
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+left to right direction
+
+title Vector Database Overview (Chroma + Hybrid Retrieval)
+
+actor "User" as User
+
+rectangle "Workflow + KB" as Workflow {
+  component "Approved Documents\n(KB markdown)" as KBDocs
+}
+
+database "Chroma Vector Store\n(databases/vector_store/chroma)" as Chroma
+cloud "Ollama Runtime\nlocalhost:11434" as Ollama
+
+rectangle "Knowledge Chat" as Chat {
+  component "Query Embedding" as QEmbed
+  component "Vector Search" as VSearch
+  component "Answer + Sources" as Answer
+}
+
+Workflow --> Chroma : Reindex approved docs
+Workflow --> Ollama : Generate chunk embeddings
+
+User --> QEmbed : Ask question
+QEmbed --> Ollama : /api/embeddings
+QEmbed --> VSearch
+VSearch --> Chroma : Similarity query
+VSearch --> Answer
+
+note right of Chroma
+Stores vectorized chunks
+for semantic retrieval.
+end note
+
+note bottom of Workflow
+Approved KB content is converted to vectors
+and stored in Chroma.
+end note
+
+@enduml

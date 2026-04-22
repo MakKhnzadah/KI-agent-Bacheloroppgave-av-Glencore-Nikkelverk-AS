@@ -3,12 +3,13 @@ import logging
 from typing import Literal, Optional
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 from pydantic import BaseModel
 
 from app.ai_services.agent_service import AgentService
 from app.ai_services.ollama_provider import OllamaProvider
 from app.agents.structuring_agents import STRUCTURING_AGENT_PROMPT
+from app.routers.workflow_helpers import _require_authenticated_user, _require_expert_user
 
 router = APIRouter(prefix="/agent", tags=["AI Agent"])
 logger = logging.getLogger(__name__)
@@ -594,7 +595,12 @@ def process_document(request: DocumentRequest):
 
 
 @router.post("/revise", response_model=ReviseResponse)
-def revise_document(request: ReviseRequest) -> ReviseResponse:
+def revise_document(
+    request: ReviseRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> ReviseResponse:
+    _require_expert_user(authorization)
+
     rewrite_hint = (
         "\n\nMERK: Instruksjonen ber om en ny/alternativ versjon. Du skal omskrive hele dokumentet.\n"
         if _instruction_requests_rewrite(request.instruction)
@@ -651,7 +657,12 @@ def revise_document(request: ReviseRequest) -> ReviseResponse:
 
 
 @router.post("/knowledge-chat", response_model=KnowledgeChatResponse)
-def knowledge_chat(request: KnowledgeChatRequest) -> KnowledgeChatResponse:
+def knowledge_chat(
+    request: KnowledgeChatRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> KnowledgeChatResponse:
+    _require_authenticated_user(authorization, allowed_roles={"employee", "expert", "admin"})
+
     """Chat/Q&A for the knowledge bank.
 
     Retrieval is dependency-free: simple lexical matching over KB markdown files.

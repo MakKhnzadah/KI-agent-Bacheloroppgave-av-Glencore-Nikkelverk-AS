@@ -5,12 +5,13 @@ import logging
 import mimetypes
 import os
 import re
+import threading
 import uuid
 from pathlib import Path
 import yaml
 from yaml import YAMLError
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 
 from app.ai_services.agent_service import AgentService
 from app.ai_services.ollama_provider import OllamaProvider
@@ -21,6 +22,7 @@ from app.services.revised_suggestion import (
     is_effectively_empty,
     unreadable_pdf_message,
 )
+from app.routers.workflow_helpers import _require_expert_user
 from app.workflow_db.config import get_repo_root
 from app.workflow_db.db import get_connection
 
@@ -220,12 +222,20 @@ def _generate_suggestion_async(
         logger.exception("Failed to persist background suggestion for %s", suggestion_id)
 
 
+def _start_daemon_task(*, target, args: tuple, name: str) -> None:
+    # Daemon threads allow Ctrl+C to stop the server immediately in dev.
+    thread = threading.Thread(target=target, args=args, name=name, daemon=True)
+    thread.start()
+
+
 @router.post("/upload")
 async def upload_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     category: str | None = Form(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
+    _require_expert_user(authorization)
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
 
@@ -335,12 +345,15 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"Failed to persist workflow data: {exc}")
 
     if not extracted_is_empty:
-        background_tasks.add_task(
-            _generate_suggestion_async,
-            suggestion_id,
-            original_filename,
-            processed_text,
-            selected_category,
+        _start_daemon_task(
+            target=_generate_suggestion_async,
+            args=(
+                suggestion_id,
+                original_filename,
+                processed_text,
+                selected_category,
+            ),
+            name=f"upload-gen-{suggestion_id[:8]}",
         )
 
     processing = not extracted_is_empty

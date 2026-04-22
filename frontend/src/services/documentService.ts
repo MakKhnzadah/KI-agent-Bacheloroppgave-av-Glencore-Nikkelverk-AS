@@ -150,6 +150,22 @@ type KbReindexStatusResponse = {
   last_indexed_chunks?: number | null;
 };
 
+type KbIssueReportRequest = {
+  kb_path: string;
+  message: string;
+  document_title?: string;
+  context_excerpt?: string;
+};
+
+type KbIssueReportResponse = {
+  report_id: string;
+  kb_path: string;
+  status: "submitted";
+  reported_by: string;
+  reported_role: string;
+  created_at: string;
+};
+
 type VectorDbDocument = {
   path: string;
   kb_path?: string | null;
@@ -180,11 +196,29 @@ type VectorDbReindexResponse = {
 
 
 class DocumentService {
-  getOriginalFileUrl(suggestionId: string, options?: { render?: "pdf" }): string {
-    const base = `${apiClient.baseUrl}/workflow/suggestions/${suggestionId}/file`;
+  private getOriginalFilePath(suggestionId: string, options?: { render?: "pdf" }): string {
+    const base = `/workflow/suggestions/${suggestionId}/file`;
     if (!options?.render) return base;
     const qs = new URLSearchParams({ render: options.render });
     return `${base}?${qs.toString()}`;
+  }
+
+  getOriginalFileUrl(suggestionId: string, options?: { render?: "pdf" }): string {
+    return `${apiClient.baseUrl}${this.getOriginalFilePath(suggestionId, options)}`;
+  }
+
+  async headOriginalFile(suggestionId: string, options?: { render?: "pdf" }): Promise<Response> {
+    return apiClient.request(this.getOriginalFilePath(suggestionId, options), {
+      method: "HEAD",
+      requireAuth: true,
+    });
+  }
+
+  async fetchOriginalFile(suggestionId: string, options?: { render?: "pdf" }): Promise<Response> {
+    return apiClient.request(this.getOriginalFilePath(suggestionId, options), {
+      method: "GET",
+      requireAuth: true,
+    });
   }
 
   async getSuggestionSimilarity(
@@ -201,7 +235,7 @@ class DocumentService {
     if (params?.excludeKbPath) qs.set("exclude_kb_path", params.excludeKbPath);
 
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return apiClient.getJson<SimilarityResponse>(`/workflow/suggestions/${suggestionId}/similarity${suffix}`);
+    return apiClient.getJson<SimilarityResponse>(`/workflow/suggestions/${suggestionId}/similarity${suffix}`, { requireAuth: true });
   }
 
   async checkSimilarityForDocument(
@@ -219,14 +253,14 @@ class DocumentService {
 
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     const body: SimilarityCheckRequest = { document: document || "" };
-    return apiClient.postJson<SimilarityCheckResponse>(`/workflow/similarity-check${suffix}`, body);
+    return apiClient.postJson<SimilarityCheckResponse>(`/workflow/similarity-check${suffix}`, body, { requireAuth: true });
   }
 
   async reviseDocument(params: ReviseRequest): Promise<ReviseResponse> {
     return apiClient.postJson<ReviseResponse>("/agent/revise", {
       document: params.document,
       instruction: params.instruction,
-    });
+    }, { requireAuth: true });
   }
 
   async askKnowledgeBank(params: KnowledgeChatRequest): Promise<KnowledgeChatResponse> {
@@ -234,16 +268,16 @@ class DocumentService {
       message: params.message,
       category: params.category,
       history: params.history,
-    });
+    }, { requireAuth: true });
   }
 
   async getKnowledgeBankStats(): Promise<KbStatsResponse> {
-    return apiClient.getJson<KbStatsResponse>("/workflow/kb/stats");
+    return apiClient.getJson<KbStatsResponse>("/workflow/kb/stats", { requireAuth: true });
   }
 
   async getKnowledgeBankDocument(kbPath: string): Promise<KbDocumentResponse> {
     const qs = new URLSearchParams({ kb_path: kbPath });
-    return apiClient.getJson<KbDocumentResponse>(`/workflow/kb/document?${qs.toString()}`);
+    return apiClient.getJson<KbDocumentResponse>(`/workflow/kb/document?${qs.toString()}`, { requireAuth: true });
   }
 
   async listKnowledgeBankDocuments(params?: {
@@ -256,7 +290,11 @@ class DocumentService {
     if (params?.offset !== undefined) qs.set("offset", String(params.offset));
     if (params?.category) qs.set("category", params.category);
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return apiClient.getJson<KbDocumentsListResponse>(`/workflow/kb/documents${suffix}`);
+    return apiClient.getJson<KbDocumentsListResponse>(`/workflow/kb/documents${suffix}`, { requireAuth: true });
+  }
+
+  async reportKnowledgeIssue(payload: KbIssueReportRequest): Promise<KbIssueReportResponse> {
+    return apiClient.postJson<KbIssueReportResponse>("/workflow/kb/issues", payload, { requireAuth: true });
   }
 
   async deleteKnowledgeBankDocument(kbPath: string, deleteIndexed = true): Promise<void> {
@@ -265,7 +303,7 @@ class DocumentService {
   }
 
   async getKnowledgeBankReindexStatus(): Promise<KbReindexStatusResponse> {
-    return apiClient.getJson<KbReindexStatusResponse>("/workflow/kb/reindex-status");
+    return apiClient.getJson<KbReindexStatusResponse>("/workflow/kb/reindex-status", { requireAuth: true });
   }
 
   async listVectorDbDocuments(params?: { limit?: number; offset?: number }): Promise<VectorDbListResponse> {
@@ -273,16 +311,16 @@ class DocumentService {
     if (params?.limit !== undefined) qs.set("limit", String(params.limit));
     if (params?.offset !== undefined) qs.set("offset", String(params.offset));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return apiClient.getJson<VectorDbListResponse>(`/vector/db/documents${suffix}`);
+    return apiClient.getJson<VectorDbListResponse>(`/vector/db/documents${suffix}`, { requireAuth: true });
   }
 
   async deleteVectorDbDocument(kbPath: string): Promise<void> {
     const qs = new URLSearchParams({ kb_path: kbPath });
-    await apiClient.delete(`/vector/db/documents?${qs.toString()}`);
+    await apiClient.delete(`/vector/db/documents?${qs.toString()}`, { requireAuth: true });
   }
 
   async reindexVectorDb(): Promise<VectorDbReindexResponse> {
-    return apiClient.postJson<VectorDbReindexResponse>("/vector/index/kb", {});
+    return apiClient.postJson<VectorDbReindexResponse>("/vector/index/kb", {}, { requireAuth: true });
   }
 
   async waitForKnowledgeBankReindexCompletion(options?: {
@@ -312,16 +350,16 @@ class DocumentService {
   }
 
   async getAllDocuments(): Promise<Document[]> {
-    const items = await apiClient.getJson<SuggestionListItem[]>("/workflow/suggestions?limit=200&offset=0");
+    const items = await apiClient.getJson<SuggestionListItem[]>("/workflow/suggestions?limit=200&offset=0", { requireAuth: true });
     const details = await Promise.all(
-      items.map((s) => apiClient.getJson<SuggestionDetail>(`/workflow/suggestions/${s.suggestion_id}`)),
+      items.map((s) => apiClient.getJson<SuggestionDetail>(`/workflow/suggestions/${s.suggestion_id}`, { requireAuth: true })),
     );
 
     return items.map((item, idx) => toDocumentFromSuggestion(item, details[idx]));
   }
 
   async getOriginalContent(suggestionId: string): Promise<string> {
-    const res = await apiClient.getJson<SuggestionOriginal>(`/workflow/suggestions/${suggestionId}/original`);
+    const res = await apiClient.getJson<SuggestionOriginal>(`/workflow/suggestions/${suggestionId}/original`, { requireAuth: true });
     return res.text || "";
   }
 
@@ -342,7 +380,7 @@ class DocumentService {
 
   async getDocumentById(id: string): Promise<Document | null> {
     try {
-      const detail = await apiClient.getJson<SuggestionDetail>(`/workflow/suggestions/${id}`);
+      const detail = await apiClient.getJson<SuggestionDetail>(`/workflow/suggestions/${id}`, { requireAuth: true });
       const listItem: SuggestionListItem = {
         suggestion_id: detail.suggestion_id,
         upload_id: detail.upload_id,
@@ -374,7 +412,7 @@ class DocumentService {
     form.append("file", params.file);
     if (params.category) form.append("category", params.category);
 
-    const res = await apiClient.postForm<UploadResponse>("/documents/upload", form);
+    const res = await apiClient.postForm<UploadResponse>("/documents/upload", form, { requireAuth: true });
 
     const revised = [res.structured_draft, res.suggestion_addon].filter(Boolean).join("\n\n").trim();
     const title = (params.title || "").trim() || pickTitleFromSuggestion(revised, params.file.name);

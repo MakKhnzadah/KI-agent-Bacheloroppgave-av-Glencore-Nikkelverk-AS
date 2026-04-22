@@ -3,6 +3,7 @@
  */
 
 import { LoginCredentials, AuthResponse, User } from "@/types";
+import { normalizeUserRole } from "@/utils/role-access";
 
 export class ServiceError extends Error {
   status: number;
@@ -209,7 +210,7 @@ class AuthService {
       id: user.id,
       name: user.displayName,
       email: user.email,
-      role: user.role,
+      role: normalizeUserRole(user.role) as User["role"],
     };
   }
 

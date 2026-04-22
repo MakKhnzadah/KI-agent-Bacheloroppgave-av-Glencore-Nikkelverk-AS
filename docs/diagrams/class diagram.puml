@@ -1,6 +1,6 @@
 @startuml
 
-' AI Agent + Process Knowledge Base — class diagram (Current MVP Implementation)
+' AI Agent + Process Knowledge Base — class diagram aligned with updated use-cases
 
 skinparam style strictuml
 skinparam packageStyle rectangle
@@ -10,75 +10,126 @@ skinparam classAttributeIconSize 0
 hide circle
 hide empty members
 
-' Actors
+' People (from use-case diagram; no generic User class)
 class "Expert User" as ExpertUser <<actor>>
 class Employee <<actor>>
 
-' FastAPI layer (routers)
-class DocumentsRouter {
-  +POST /documents/upload(file)
+' Login/auth (Review Suggestions includes Login)
+class AuthService {
+  +login(username: str, password: str): Session
 }
-class WorkflowRouter {
-  +GET /workflow/suggestions/{id}
-  +POST /workflow/suggestions/{id}/review
-  +POST /workflow/suggestions/{id}/apply
+class Session {
+  +principalId: str
+  +expiresAt: datetime
 }
-class VectorRouter {
-  +POST /vector/index/kb
-  +GET /vector/search(q,k)
+AuthService ..> Session : creates
+
+' Documents: upload + parse/normalize
+class Document {
+  +id: str
+  +sourceName: str
+  +content: str
+}
+class NormalizedDocument {
+  +id: str
+  +normalizedText: str
 }
 
-' Workflow DB (SQLite)
-class WorkflowDb <<database>> {
-  +uploads
-  +normalized_documents
-  +suggestions
-  +reviews
-  +applied_changes
+class UploadService {
+  +upload(source: DocumentSource): list<Document>
+}
+class ParseNormalizeService {
+  +parseAndNormalize(docs: list<Document>): list<NormalizedDocument>
 }
 
-' Core processing
-class DocumentParser {
-  +parse_document(filename: str, bytes): str
+' Suggestions + review/approve/reject
+class Suggestion {
+  +id: str
+  +changeSummary: str
 }
-class AgentService {
-  +process_document(prompt: str, normalizedText: str): str
+class ReviewedSuggestion {
+  +suggestionId: str
+  +decision: ReviewDecision
+  +comment: str
 }
-
-' KB storage (source of truth)
-class "Raw Knowledge Base\n(Markdown + YAML)" as RawKb <<storage>>
-
-' Indexing + search
-class KbIndexer {
-  +index_kb(): stats
-}
-class ChromaVectorStore <<vector-db>> {
-  +upsert(...)
-  +query(...)
+enum ReviewDecision {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
-' External services
-class "Ollama LLM" as OllamaLlm <<external>>
-class "Ollama Embeddings" as OllamaEmbeddings <<external>>
+class SuggestionGenerator {
+  +generate(normalized: list<NormalizedDocument>): list<Suggestion>
+}
+class ReviewService {
+  +review(session: Session, suggestions: list<Suggestion>): list<ReviewedSuggestion>
+  +approve(session: Session, suggestionId: str): ReviewedSuggestion
+  +reject(session: Session, suggestionId: str, reason: str): ReviewedSuggestion
+}
+
+ReviewedSuggestion "1" o-- "1" Suggestion
+
+ReviewService ..> AuthService : <<include>> Login
+ReviewService ..> Session : validates
+
+' Save updates + read knowledge
+class UpdatePackage {
+  +id: str
+  +appliedAt: datetime
+}
+class SaveUpdateService {
+  +save(session: Session, reviewed: list<ReviewedSuggestion>): UpdatePackage
+}
+
+class HtmlKnowledgeBase {
+  +read(page: str): str
+}
+
+' External systems (from updated use-case diagram)
+interface DocumentSource <<external>>
+class "Document Sources\n(PDF / Email / Text)" as Docs <<external>>
+Docs ..|> DocumentSource
+
+interface LlmService <<external>>
+class "Language Model Service\n(Microsoft / OpenAI)" as LLM <<external>>
+LLM ..|> LlmService
+
+interface Repository <<external>>
+class "Storage / Repository\n(Local / Git)" as Storage <<external>>
+Storage ..|> Repository
+
+' Dependencies
+UploadService ..> DocumentSource : reads
+UploadService "1" --> "0..*" Document : creates
+
+ParseNormalizeService "1" --> "0..*" Document : parses
+ParseNormalizeService "1" --> "0..*" NormalizedDocument : creates
+NormalizedDocument "1" --> "1" Document : derivedFrom
+
+SuggestionGenerator ..> LlmService : prompts
+SuggestionGenerator "1" --> "0..*" NormalizedDocument : reads
+SuggestionGenerator "1" --> "0..*" Suggestion : creates
+
+ReviewService "1" --> "0..*" Suggestion : reviews
+ReviewService "1" --> "0..*" ReviewedSuggestion : creates
+
+SaveUpdateService "1" --> "0..*" ReviewedSuggestion : applies
+SaveUpdateService "1" --> "1" UpdatePackage : creates
+UpdatePackage "1" o-- "0..*" ReviewedSuggestion : contains
+
+SaveUpdateService ..> Repository : writes updates
+HtmlKnowledgeBase ..> Repository : reads HTML
 
 ' Relationships
-ExpertUser --> DocumentsRouter : uploads
-DocumentsRouter --> DocumentParser : normalizes
-DocumentsRouter --> AgentService : generates draft
-DocumentsRouter --> WorkflowDb : persists workflow data
-AgentService --> OllamaLlm : calls
+' Actor interactions (aligns with use-case diagram)
+ExpertUser ..> AuthService : Login
+ExpertUser ..> UploadService : Upload Documents
+ExpertUser ..> ParseNormalizeService : Parse & Normalize
+ExpertUser ..> SuggestionGenerator : Generate Suggestions
+ExpertUser ..> ReviewService : Review/Approve/Reject
+ExpertUser ..> SaveUpdateService : Save Updates
+ExpertUser ..> HtmlKnowledgeBase : Read Knowledge
 
-ExpertUser --> WorkflowRouter : reviews/applies
-WorkflowRouter --> WorkflowDb : reads/writes status
-WorkflowRouter --> RawKb : writes .md
-WorkflowRouter --> KbIndexer : schedules re-index
-
-Employee --> VectorRouter : searches
-VectorRouter --> OllamaEmbeddings : embed query
-VectorRouter --> ChromaVectorStore : query
-
-KbIndexer --> RawKb : reads .md
-KbIndexer --> OllamaEmbeddings : embed chunks
-KbIndexer --> ChromaVectorStore : upserts
+Employee ..> HtmlKnowledgeBase : Read Knowledge
 
 @enduml

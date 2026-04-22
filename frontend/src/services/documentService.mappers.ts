@@ -28,15 +28,16 @@ export function normalizeStatus(status: string): Document["status"] {
 
 function formatUploadedAt(sqliteDateTime: string | undefined): string {
   if (!sqliteDateTime) return "";
-  const iso = sqliteDateTime.replace(" ", "T") + "Z";
-  const dt = new Date(iso);
+  const normalized = sqliteDateTime.trim().replace(" ", "T");
+  const hasTimezone = /(?:z|[+-]\d{2}:\d{2})$/i.test(normalized);
+  const dt = new Date(hasTimezone ? normalized : `${normalized}Z`);
   if (Number.isNaN(dt.getTime())) return sqliteDateTime;
 
-  const day = dt.getUTCDate();
+  const day = dt.getDate();
   const month = dt.toLocaleDateString("nb-NO", { month: "short" });
-  const year = dt.getUTCFullYear();
-  const hh = dt.getUTCHours().toString().padStart(2, "0");
-  const mm = dt.getUTCMinutes().toString().padStart(2, "0");
+  const year = dt.getFullYear();
+  const hh = dt.getHours().toString().padStart(2, "0");
+  const mm = dt.getMinutes().toString().padStart(2, "0");
   return `${day}. ${month} ${year} - ${hh}:${mm}`;
 }
 

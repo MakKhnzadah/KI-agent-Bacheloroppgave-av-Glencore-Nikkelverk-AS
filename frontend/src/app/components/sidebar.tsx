@@ -2,6 +2,7 @@ import { useNavigate, useLocation } from "react-router";
 import { LayoutGrid, Upload, CheckCircle, FileText, Database, LogOut } from "lucide-react";
 import { useAuth } from "@/app/context/auth-context";
 import { useDocuments } from "@/app/context/documents-context";
+import { canAccessExpertFeatures, defaultPathForRole, normalizeUserRole } from "@/utils/role-access";
 
 export function Sidebar() {
   const navigate = useNavigate();
@@ -10,14 +11,18 @@ export function Sidebar() {
   const { getPendingDocuments } = useDocuments();
 
   const pendingCount = getPendingDocuments().length;
+  const role = normalizeUserRole(user?.role);
+  const expertAccess = canAccessExpertFeatures(role);
 
-  const menuItems = [
-    { path: "/dashboard", label: "Oversikt", icon: LayoutGrid },
-    { path: "/upload", label: "Last opp dokument", icon: Upload },
-    { path: "/queue", label: "Til godkjenning", icon: CheckCircle, badge: pendingCount },
-    { path: "/knowledge-bank", label: "Kunnskapsbank", icon: FileText },
-    { path: "/files", label: "Filer", icon: Database },
-  ];
+  const menuItems = expertAccess
+    ? [
+        { path: "/dashboard", label: "Oversikt", icon: LayoutGrid },
+        { path: "/upload", label: "Last opp dokument", icon: Upload },
+        { path: "/queue", label: "Til godkjenning", icon: CheckCircle, badge: pendingCount },
+        { path: "/knowledge-bank", label: "Kunnskapsbank", icon: FileText },
+        { path: "/files", label: "Filer", icon: Database },
+      ]
+    : [{ path: "/knowledge-bank", label: "Kunnskapsbank", icon: FileText }];
 
   const handleLogout = () => {
     logout();
@@ -29,7 +34,7 @@ export function Sidebar() {
       {/* Logo Section */}
       <div className="h-[124px] flex items-center justify-center border-b border-[#000000]/10 text-center">
         <button
-          onClick={() => navigate("/dashboard")}
+          onClick={() => navigate(defaultPathForRole(role))}
           className="flex flex-col items-center gap-4 hover:opacity-80 transition-opacity cursor-pointer"
         >
           <img src="/assets/glencore-logo.svg" className="w-[210px] h-auto object-contain" alt="Glencore Logo" />
@@ -77,7 +82,7 @@ export function Sidebar() {
           </div>
           <div className="flex-1">
             <p className="text-base text-[#000000] font-medium leading-tight">{user?.name || "Ekspert Bruker"}</p>
-            <p className="text-sm text-[#000000]/60 font-normal leading-tight">{user?.role || "Fagbruker"}</p>
+            <p className="text-sm text-[#000000]/60 font-normal leading-tight">{role || "employee"}</p>
           </div>
         </div>
         <button

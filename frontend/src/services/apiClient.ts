@@ -98,6 +98,10 @@ async function request(path: string, init?: ApiClientRequestInit): Promise<Respo
 export const apiClient = {
   baseUrl: getApiBaseUrl(),
 
+  async request(path: string, init?: ApiClientRequestInit): Promise<Response> {
+    return request(path, init);
+  },
+
   async getJson<T>(path: string, init?: ApiClientRequestInit): Promise<T> {
     const res = await request(path, {
       ...init,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/app/context/auth-context";
+import { defaultPathForRole } from "@/utils/role-access";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -15,9 +16,9 @@ export function LoginPage() {
     e.preventDefault();
 
     try {
-      const success = await login(email, password);
-      if (success) {
-        navigate("/dashboard");
+      const loggedInUser = await login(email, password);
+      if (loggedInUser) {
+        navigate(defaultPathForRole(loggedInUser.role));
       }
     } catch (err) {
       console.error("Login failed", err);

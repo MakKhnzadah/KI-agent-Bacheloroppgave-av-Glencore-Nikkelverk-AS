@@ -1,0 +1,1 @@
+﻿Dokument for timeout-fix verifisering. Unik kode: E2E-TIMEOUT-FIX-20260331221249

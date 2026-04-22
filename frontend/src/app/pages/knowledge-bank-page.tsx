@@ -36,6 +36,9 @@ export function KnowledgeBankPage() {
   const [selectedDocument, setSelectedDocument] = useState<Source | null>(null);
   const [selectedDocumentContent, setSelectedDocumentContent] = useState<string>("");
   const [selectedDocumentLoading, setSelectedDocumentLoading] = useState(false);
+  const [issueMessage, setIssueMessage] = useState("");
+  const [issueSubmitting, setIssueSubmitting] = useState(false);
+  const [issueFeedback, setIssueFeedback] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [currentSessionId, setCurrentSessionId] = useState("1");
   const [chatSending, setChatSending] = useState(false);
@@ -140,6 +143,8 @@ export function KnowledgeBankPage() {
     if (!selectedDocument) {
       setSelectedDocumentContent("");
       setSelectedDocumentLoading(false);
+      setIssueMessage("");
+      setIssueFeedback(null);
       return;
     }
 
@@ -164,6 +169,30 @@ export function KnowledgeBankPage() {
       cancelled = true;
     };
   }, [selectedDocument]);
+
+  const handleSubmitIssue = () => {
+    if (!selectedDocument || !issueMessage.trim() || issueSubmitting) return;
+
+    setIssueSubmitting(true);
+    setIssueFeedback(null);
+
+    void (async () => {
+      try {
+        await documentService.reportKnowledgeIssue({
+          kb_path: selectedDocument.id,
+          message: issueMessage.trim(),
+          document_title: selectedDocument.title,
+          context_excerpt: (selectedDocumentContent || "").slice(0, 1500),
+        });
+        setIssueMessage("");
+        setIssueFeedback("Takk! Tilbakemeldingen ble sendt.");
+      } catch (e) {
+        setIssueFeedback(`Kunne ikke sende tilbakemelding. ${getAuthPermissionErrorMessage(e)}`);
+      } finally {
+        setIssueSubmitting(false);
+      }
+    })();
+  };
 
   const handleNewChat = () => {
     const newSession: ChatSession = {
@@ -540,6 +569,31 @@ export function KnowledgeBankPage() {
                     {selectedDocumentContent || ""}
                   </pre>
                 )}
+
+                <div className="mt-6 border border-[#000000]/10 rounded-lg p-4 bg-[#F8FAFA]">
+                  <h4 className="text-sm font-semibold text-[#000000] mb-2">Rapporter feil / tilbakemelding</h4>
+                  <p className="text-xs text-[#000000]/70 mb-3">
+                    Beskriv hva som er feil eller uklart i dette dokumentet.
+                  </p>
+                  <textarea
+                    value={issueMessage}
+                    onChange={(e) => setIssueMessage(e.target.value)}
+                    placeholder="Skriv tilbakemelding..."
+                    className="w-full min-h-24 px-3 py-2 border border-[#000000]/20 rounded-md text-sm text-[#000000] focus:outline-none focus:ring-2 focus:ring-[#00AFAA]"
+                  />
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <p className={`text-xs ${issueFeedback?.startsWith("Takk") ? "text-[#475834]" : "text-[#82131E]"}`}>
+                      {issueFeedback || ""}
+                    </p>
+                    <button
+                      onClick={handleSubmitIssue}
+                      disabled={!issueMessage.trim() || issueSubmitting}
+                      className="px-4 py-2 bg-[#00AFAA] hover:bg-[#00AFAA]/90 disabled:bg-[#00AFAA]/50 disabled:cursor-not-allowed text-white rounded-md transition-colors text-xs font-semibold"
+                    >
+                      {issueSubmitting ? "Sender..." : "Send tilbakemelding"}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

@@ -29,6 +29,13 @@ if "@" not in DEFAULT_EMAIL:
     DEFAULT_EMAIL = "expert@glencore.com"
 DEFAULT_ROLE = os.getenv("AUTH_DEFAULT_ROLE", "expert")
 
+DEFAULT_VIEWER_EMAIL = os.getenv("AUTH_VIEWER_EMAIL", "viewer@glencore.com")
+if "@" not in DEFAULT_VIEWER_EMAIL:
+    DEFAULT_VIEWER_EMAIL = "viewer@glencore.com"
+DEFAULT_VIEWER_PASSWORD = os.getenv("AUTH_VIEWER_PASSWORD", "viewer123")
+DEFAULT_VIEWER_DISPLAY_NAME = os.getenv("AUTH_VIEWER_DISPLAY_NAME", "Viewer User")
+DEFAULT_VIEWER_ROLE = os.getenv("AUTH_VIEWER_ROLE", "user")
+
 Role = Literal["admin", "reviewer", "user", "expert", "employee"]
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -204,24 +211,46 @@ def _ensure_default_user(conn) -> None:
         )
 
     existing = conn.execute("SELECT id FROM users LIMIT 1").fetchone()
-    if existing is not None:
-        return
+    if existing is None:
+        role = desired_role
+        salt = secrets.token_bytes(16)
+        conn.execute(
+            """
+            INSERT INTO users (id, username, password_hash, display_name, role, is_active)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (
+                str(uuid.uuid4()),
+                default_email,
+                _hash_password(DEFAULT_PASSWORD, salt),
+                DEFAULT_DISPLAY_NAME,
+                role,
+            ),
+        )
 
-    role = desired_role
-    salt = secrets.token_bytes(16)
-    conn.execute(
-        """
-        INSERT INTO users (id, username, password_hash, display_name, role, is_active)
-        VALUES (?, ?, ?, ?, ?, 1)
-        """,
-        (
-            str(uuid.uuid4()),
-            default_email,
-            _hash_password(DEFAULT_PASSWORD, salt),
-            DEFAULT_DISPLAY_NAME,
-            role,
-        ),
-    )
+    viewer_email = _validate_email_or_raise(DEFAULT_VIEWER_EMAIL)
+    viewer_role = DEFAULT_VIEWER_ROLE if DEFAULT_VIEWER_ROLE in {"admin", "reviewer", "user", "expert", "employee"} else "user"
+    if viewer_role == "employee":
+        viewer_role = "reviewer"
+    if not _role_supported(conn, viewer_role):
+        viewer_role = "user"
+
+    viewer_exists = conn.execute("SELECT id FROM users WHERE username = ?", (viewer_email,)).fetchone()
+    if viewer_exists is None:
+        viewer_salt = secrets.token_bytes(16)
+        conn.execute(
+            """
+            INSERT INTO users (id, username, password_hash, display_name, role, is_active)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (
+                str(uuid.uuid4()),
+                viewer_email,
+                _hash_password(DEFAULT_VIEWER_PASSWORD, viewer_salt),
+                DEFAULT_VIEWER_DISPLAY_NAME,
+                viewer_role,
+            ),
+        )
 
 
 def _find_active_session_by_access_hash(conn, access_hash: str):

@@ -9,7 +9,7 @@ export function normalizeUserRole(role?: string | null): string {
 export function defaultPathForRole(role?: string | null): string {
   const normalized = normalizeUserRole(role);
   if (normalized === "employee") {
-    return "/knowledge-bank";
+    return "/dashboard";
   }
   return "/dashboard";
 }

@@ -1,0 +1,180 @@
+\chapter{Results}
+
+This chapter reports the outcomes of the implemented system and the observed behavior during execution and validation.
+The purpose is to present what was produced and what was empirically observed across design outcomes, implementation outcomes, workflow execution, retrieval behavior, indexing behavior, and test outcomes.
+The chapter is descriptive and evidence-oriented, while interpretation is reserved for the Discussion chapter.
+
+\section{System Design and Architecture Outcomes}
+
+This section presents the final design artifacts produced through iterative development.
+The outcomes include a layered architecture, role-aware interaction design, structural class modeling, and sequence-level runtime modeling.
+Together, these artifacts document how governance requirements (controlled review and approval) and retrieval requirements (grounded responses with source traceability) were realized in the final system design.
+
+\subsection{Overall Architecture Outcome}
+
+The final architecture separates frontend interaction, backend orchestration, and storage/model infrastructure.
+Workflow governance functions (review, approval, apply, auditability) are explicitly separated from retrieval-time functions (query embedding, search, context assembly, response generation).
+This outcome improved boundary clarity and reduced coupling between editorial workflow operations and chat retrieval behavior.
+
+\subsection{Modeling Outcomes (Use Case, Class, and Sequence)}
+
+The final UML outcomes provide complementary views of the system.
+Use case models clarified actor responsibilities and system boundaries.
+Class modeling documented static responsibilities and relationships between workflow entities and services.
+Sequence modeling documented dynamic interactions for upload, review, apply, indexing, and retrieval operations.
+Compared with early sketches, the final models show improved role separation, traceability, and runtime consistency.
+
+\section{Implementation Outcomes}
+
+This section summarizes what was realized in code from the final design.
+Implementation outcomes are reported by technical domain to keep traceability between requirements, architecture decisions, and executable behavior.
+
+\subsection{Backend and API Outcome}
+
+The backend outcome is a modular FastAPI implementation with separated router-service responsibilities and explicit endpoint contracts.
+Authentication, ingestion, workflow review/apply, indexing status, and knowledge chat were implemented as distinct API domains.
+This produced a stable interface between frontend and backend and supported controlled state transitions in the workflow lifecycle.
+
+\subsection{Data Flow and Pipeline Outcome}
+
+The implemented pipeline transforms uploaded documents into governed, retrievable knowledge through staged processing.
+Observed implementation behavior confirms document parsing/normalization, AI-assisted draft generation, expert review, controlled apply, and background indexing after approved updates.
+This result establishes an end-to-end document-to-knowledge path with explicit publication gates.
+
+\subsection{Model Integration Outcome}
+
+Model integration was realized as decoupled generation and embedding paths.
+This separation enabled independent configuration of generation and retrieval behavior, including timeout/retry controls and fallback handling.
+The local-first runtime choice supported reproducible PoC execution under project constraints.
+
+\section{Workflow Execution Results}
+
+The implemented workflow starts with authenticated access, continues through document upload and AI-assisted suggestion generation, and ends with expert review, approval/rejection, and knowledge-base update. Figure~\ref{fig:workflow_as_built} summarizes the observed as-built process.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.25\linewidth]{Figures/workflow-as-built.png}
+  \caption{As-built workflow used in production-like execution. The flow shows authentication, upload, AI structuring, expert review, apply/reject decision, and background indexing of approved knowledge, Created using PlantUML Editor \cite{PlantUML_Editor}.}
+  \label{fig:workflow_as_built}
+\end{figure}
+
+The authentication stage is shown in Figure~\ref{fig:ui_login}. The user enters credentials and receives access to protected workflow actions.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.55\linewidth]{Figures/Login_page.png}
+  \caption{Login interface used to authenticate expert users before review and apply operations. This gate enforces role-based access to sensitive workflow actions.}
+  \label{fig:ui_login}
+\end{figure}
+
+After authentication, the upload interface supports document submission and preprocessing initiation. Figure~\ref{fig:ui_upload} shows the upload page, while Figure~\ref{fig:ui_upload_selected} shows a selected file ready for submission.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/upload_page.png}
+  \caption{Document upload interface with guided workflow steps and drag-and-drop input area. The page initiates ingestion into the processing pipeline.}
+  \label{fig:ui_upload}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/upload_selected.png}
+  \caption{Upload view after file selection. The selected document, category, and submission action are visible before analysis is triggered.}
+  \label{fig:ui_upload_selected}
+\end{figure}
+
+The review queue is presented in Figure~\ref{fig:ui_approval_list}. The interface displays pending suggestions and indexing status. Figure~\ref{fig:ui_approval_modal} shows the detailed review modal where expert users can inspect, revise, and approve or reject AI-generated content.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/approval_page.png}
+  \caption{Approval queue interface showing pending AI suggestions and current indexing status. This view supports controlled progression from draft to reviewed state.}
+  \label{fig:ui_approval_list}
+\end{figure}
+
+
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/original_document_modal.png}
+  \caption{Original document inspection view in the approval workflow. The reviewer can open the uploaded source document directly from the review interface before making an approval decision.}
+  \label{fig:ui_original_document}
+\end{figure}
+
+
+Figure~\ref{fig:ui_original_document} shows the source-inspection step used during review. This supports human-in-the-loop validation by allowing direct comparison between the original input and the AI-generated proposal.
+
+
+Figure~\ref{fig:ui_approval_rejected} illustrates how rejected suggestions are preserved as rejected workflow outcomes rather than being applied.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/approval_rejected.png}
+  \caption{Approval view including rejected entries. Rejected suggestions remain traceable in workflow history and are excluded from apply/index operations.}
+  \label{fig:ui_approval_rejected}
+\end{figure}
+
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/rejected_detail_modal.png}
+  \caption{Detailed rejected-suggestion view. The interface shows rejection status, AI-revised content, and original content context, supporting traceable review outcomes.}
+  \label{fig:ui_rejected_detail}
+\end{figure}
+
+Figure~\ref{fig:ui_rejected_detail} shows the detailed rejected-suggestion state, where rejected content remains inspectable for auditability and future correction workflows.
+
+\section{Retrieval and Chat Results}
+
+The knowledge chat interface was observed to return generated answers together with source references. Figure~\ref{fig:ui_chat} shows a representative interaction where the response is accompanied by retrieved source entries and retrieval-method tags.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/chat.png}
+  \caption{Knowledge chat interface showing user query, generated response, and source references. Source cards expose traceability of the returned answer.}
+  \label{fig:ui_chat}
+\end{figure}
+
+Observed runtime behavior confirms that retrieval can return multiple candidate sources and that source-linked responses remain visible in the UI. In degraded model conditions, the system returns a controlled message rather than an unhandled failure, preserving endpoint stability and user feedback continuity.
+
+\section{Indexing and Runtime Behavior}
+
+After a suggestion is approved and applied, the backend starts a background indexing task. During execution, indexing states transition through scheduled, in-progress, and completed (or failed) states. These transitions are surfaced in the queue view and reflected in dashboard counters.
+
+The dashboard example in Figure~\ref{fig:ui_dashboard} shows aggregated operational indicators, including pending approvals and total document count. This supports operational monitoring of workflow throughput and knowledge-base growth.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/dashboard.png}
+  \caption{Dashboard overview with operational indicators. The view provides a compact summary of pending approvals, total documents, and recent activity.}
+  \label{fig:ui_dashboard}
+\end{figure}
+
+\section{Test Outcomes}
+
+Validation runs confirmed stable behavior for core workflow and retrieval paths. Upload processing, review transitions, apply persistence, indexing status updates, and chat responses were all observed through automated and scenario-based checks. Authorization-sensitive operations were rejected for invalid access attempts and accepted for valid expert sessions.
+
+Table~\ref{tab:results_summary} summarizes observed outcomes by validation area.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{2.6cm} p{6.8cm} p{3.8cm}}
+\textbf{Test Area} & \textbf{Observed Result} & \textbf{Evidence Type} \\
+\hline
+Upload & Documents were accepted, persisted, and linked to workflow records with draft suggestion state. & API responses and persisted workflow rows \\
+\hline
+Review & Suggestion status changed correctly based on expert decision (approved/rejected). & Endpoint responses and state transitions \\
+\hline
+Apply & Approved content was written to knowledge-base Markdown and recorded in applied-change history. & File-system verification and database checks \\
+\hline
+Retrieval & Chat returned generated answers with source metadata; retrieval behavior remained observable. & Chat response payloads and source cards \\
+\hline 
+Indexing & Background reindex executed after apply and exposed state progression in API/UI. & Reindex status endpoint and interface indicators \\
+\hline
+\end{tabular}
+\caption{Observed results across core validation areas.}
+\label{tab:results_summary}
+\end{table}
+
+Overall, the system produced consistent observable behavior across document ingestion, approval governance, indexing, and retrieval. The results show that the implemented components operate as an integrated workflow and that key operational states remain visible and traceable during runtime.

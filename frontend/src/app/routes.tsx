@@ -1,11 +1,11 @@
 import { createBrowserRouter } from "react-router";
 import { LoginPage } from "./pages/login-page";
 import { DashboardPage } from "./pages/dashboard-page";
+import { FilesPage } from "./pages/files-page.tsx";
 import { UploadPage } from "./pages/upload-page";
 import { QueuePage } from "./pages/queue-page";
 import { KnowledgeBankPage } from "./pages/knowledge-bank-page";
 import { DocumentDetailPage } from "./pages/document-detail-page";
-import { VectorDbPage } from "./pages/vector-db-page";
 import { ErrorBoundary } from "./components/error-boundary";
 import { ProtectedRoute } from "./components/protected-route";
 
@@ -18,7 +18,7 @@ export const router = createBrowserRouter([
   {
     path: "/dashboard",
     element: (
-      <ProtectedRoute allowedRoles={["expert", "admin"]}>
+      <ProtectedRoute allowedRoles={["employee", "expert", "admin"]}>
         <DashboardPage />
       </ProtectedRoute>
     ),
@@ -63,8 +63,8 @@ export const router = createBrowserRouter([
   {
     path: "/files",
     element: (
-      <ProtectedRoute allowedRoles={["expert", "admin"]}>
-        <VectorDbPage />
+      <ProtectedRoute allowedRoles={["employee", "expert", "admin"]}>
+        <FilesPage />
       </ProtectedRoute>
     ),
     ErrorBoundary: ErrorBoundary,

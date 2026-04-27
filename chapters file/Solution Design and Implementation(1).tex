@@ -1,0 +1,753 @@
+\chapter{Solution Design and Implementation}
+
+This chapter presents how the proposed concept was transformed into an implementable and verifiable system.
+The purpose is to show traceability from identified needs to technical realization, rather than presenting implementation details in isolation.
+Accordingly, the chapter begins with requirement specification, since requirements define scope boundaries, quality targets, and acceptance criteria for the solution.
+
+\vspace{0.4cm}
+
+The requirements were established from stakeholder input, supervisory guidance, and findings from the analysis phase, and were refined iteratively during development.
+This iterative refinement was necessary because practical implementation exposed constraints related to runtime behavior, data quality, and integration complexity.
+By maintaining requirement traceability throughout design and coding, the project ensured that each major architectural and implementation decision remained aligned with the original problem definition. 
+
+\section{Requirements Specification}
+
+The requirements specification served as the primary decision baseline for architecture, implementation sequencing, and validation planning.
+To keep the specification operational and testable, each requirement was assigned a unique identifier and formulated in measurable terms, enabling direct mapping to design artifacts and test cases.
+
+\vspace{0.4cm}
+
+The specification is organized into functional and non-functional categories to separate capability requirements from quality constraints.
+This distinction was important in the project context: functional requirements ensured end-to-end workflow completeness, while non-functional requirements ensured that the delivered workflow was secure, reliable, observable, and maintainable under local deployment conditions.
+The section concludes with MoSCoW prioritization to make trade offs explicit and justify implementation order under PoC constraints. 
+
+\subsection{Functional Requirements}
+
+Functional requirements describe what the system must do from a user, process, and governance perspective.
+In this project, they define the complete lifecycle from document ingestion to approved knowledge publication and retrievable chat responses.
+
+\vspace{0.4cm}
+
+The listed functions were selected to ensure that the solution demonstrates a full controlled workflow rather than isolated AI output generation.
+In particular, the requirements intentionally include human approval, role based restrictions, retrieval behavior, and indexing visibility, because these capabilities are necessary for practical and responsible use in industrial documentation environments.
+Together, FR1-FR9 define the minimum operational capability set for a valid end-to-end PoC demonstration.
+
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{1.8cm} p{12.5cm}}
+\textbf{ID} & \textbf{Functional Requirement} \\ 
+\hline
+
+FR1 & The system shall allow user/the expert to upload source documents (for example PDF, TXT, and similar text-based inputs) for processing. \\ 
+\hline
+FR2 & The system shall parse and normalize uploaded documents into a structured internal representation that can be reviewed. \\ 
+\hline
+FR3 & The system shall generate AI-assisted update suggestions from normalized content. \\ 
+\hline
+FR4 & The system shall enforce a human review step where suggestions can be approved or rejected before publication. \\ 
+\hline
+FR5 & The system shall restrict approval and apply actions to authorized expert users through role-based access control. \\ 
+\hline
+FR6 & The system shall apply approved suggestions to the knowledge base and persist the resulting document state. \\
+\hline
+FR7 & The system shall support knowledge chat where answers are generated from retrieved sources and include source references. \\ 
+\hline
+FR8 & The system shall support hybrid retrieval behavior, where vector retrieval is primary and lexical retrieval is used as fallback when needed. \\ 
+\hline
+FR9 & The system shall expose indexing status so users can monitor whether newly approved content is searchable. \\ 
+
+\hline
+\end{tabular}
+\caption{Functional requirements for the proposed solution}
+\label{tab:functional_requirements}
+\end{table}
+
+
+
+
+
+\subsection{Non-Functional Requirements}
+
+Non-functional requirements define the quality attributes that determine whether the functional workflow is dependable in real use.
+For this project, these attributes are not secondary; they are central to solution credibility because workflow decisions affect governed knowledge content.
+
+\vspace{0.4cm}
+
+The selected NFRs focus on traceability, reliability, consistency, observability, security, maintainability, usability, and local deployability.
+
+These constraints were derived from the intended operating context, where the system must remain understandable to users, auditable for reviewers, and robust under limited local infrastructure.
+Together, NFR1-NFR8 establish the quality envelope within which functional requirements must operate and provide clear criteria for later validation and discussion.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{2.2cm} p{12.5cm}}
+\textbf{ID} & \textbf{Non-Functional Requirement} \\
+\hline
+
+NFR1 & The system shall provide traceability of workflow decisions, including review outcomes and applied changes. \\
+\hline
+NFR2 & The system shall maintain reliability under local runtime constraints by supporting timeout handling and controlled retries. \\
+\hline
+NFR3 & The system shall preserve data consistency between workflow state, knowledge base files, and vector index updates. \\
+\hline
+NFR4 & The system shall provide clear operational observability for indexing, including status, completion, and error reporting. \\
+\hline
+NFR5 & The system shall ensure security for sensitive actions through authenticated sessions and role checks. \\
+\hline
+NFR6 & The system shall remain maintainable through modular service boundaries and explicit API responsibilities. \\
+\hline
+NFR7 & The user-facing workflow shall be understandable and provide clear feedback for critical operations such as approval and indexing. \\
+\hline
+NFR8 & The architecture shall support local-first execution to reduce external dependency and control development cost. \\
+
+\hline
+\end{tabular}
+\caption{Non-functional requirements for the proposed solution}
+\label{tab:nonfunctional_requirements}
+\end{table}
+
+
+
+
+
+\subsection{Requirement Prioritization (MoSCoW)}
+
+Because the project was developed as a Proof of Concept (PoC) under limited time and resource constraints, requirements were prioritized using the MoSCoW method.
+In this project, MoSCoW was not only a categorization exercise; it was used as an operational planning mechanism to decide implementation sequence, control scope growth, and preserve delivery of core workflow capabilities.
+
+\vspace{0.3cm}
+The prioritization process was applied iteratively during development.
+At each iteration, requirements were evaluated against three practical criteria:
+
+contribution to end-to-end demonstrability,
+contribution to governance, reliability, and safety, and
+estimated implementation effort within the available project window.
+Requirements that directly enabled a complete and controlled document to knowledge lifecycle were classified as Must have.
+
+\vspace{0.3cm}
+Requirements that significantly improved robustness, observability, and production relevance, but were not strictly required for a valid PoC demonstration, were classified as Should have.
+Potential enhancements with clear value but lower immediate validation impact were classified as Could have.
+
+
+Items requiring enterprise scale infrastructure or broader organizational integration were explicitly deferred as Won't have (for now).
+As illustrated in Figure~\ref{fig:moscow}, the MoSCoW model categorizes requirements into four groups based on their implementation criticality: must-have, should-have, could-have, and won’t-have.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\linewidth]{Figures/MoSCoW prioritization.png}
+\caption{MoSCoW prioritization model showing classification of requirements based on importance \cite{KECG2023MoSCoW}.}
+\label{fig:moscow}
+\end{figure}
+
+Must-have requirements were implemented first to secure a complete end-to-end workflow with controlled approval and publication behavior.
+Should-have requirements were implemented next to strengthen reliability and operational transparency.
+Could-have requirements were treated as optional quality improvements, while Won't-have items were documented as future work outside current PoC scope.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{2.4cm} p{8.8cm} p{3.3cm}}
+\textbf{MoSCoW Class} & \textbf{Requirement Focus} & \textbf{Examples} \\
+\hline
+Must have & Core workflow and governance needed for a valid PoC delivery & FR1, FR4, FR5, FR6, FR7 \\
+\hline
+Should have & Important quality and reliability improvements that strengthen production relevance & FR8, FR9, NFR2, NFR4 \\
+\hline
+Could have & Valuable extensions that improve user experience or analysis depth but are not essential for PoC completion & advanced scoring, extended UI refinement \\
+\hline
+Won't have (for now) & Deliberately excluded items due to time and scope limits, documented for future work & full enterprise IAM rollout, full MLOps automation \\
+\hline
+\end{tabular}
+\caption{MoSCoW prioritization used in this project}
+\label{tab:moscow_prioritization}
+\end{table}
+
+Overall, the MoSCoW prioritization established a traceable bridge between requirement intent and implementation reality.
+It ensured that high impact capabilities were delivered first, while lower priority extensions were explicitly managed rather than implicitly omitted.
+This also strengthened validation planning, since implemented features could be directly mapped to prioritized functional and non-functional targets.
+
+
+
+
+\section{System Architecture and Design}
+
+This section presents the architectural and design perspective of the proposed solution.  
+Its purpose is to explain how the requirements from Section 4.1 were transformed into a structured system with explicit responsibilities, controlled data flow, and traceable interactions across components.
+
+\vspace{0.4cm}
+
+The design process was iterative and model driven.  
+Initial UML sketches were used to identify coarse responsibilities, after which sequence, and workflow models were refined to align with implementation constraints discovered during development.  
+This iterative refinement reduced ambiguity in service boundaries and improved consistency between design artifacts and runtime behavior.
+
+\vspace{0.4cm}
+
+A key objective of the architecture was to satisfy both governance requirements (controlled approval before publication) and retrieval requirements (fast, grounded response generation with source traceability).  
+The resulting design therefore emphasizes separation between workflow-state management and query-time retrieval orchestration, while preserving clear integration points between them.
+
+\subsection{Overall Architecture}
+
+The system follows a layered architecture with three main domains: a frontend client layer, backend API/service layer, and data/model infrastructure layer.
+
+\vspace{0.4cm}
+
+The frontend provides task oriented interfaces for upload, review, apply, and knowledge chat.
+The backend exposes typed API endpoints and orchestrates authentication, workflow state transitions, document processing, and retrieval operations.
+The infrastructure layer persists workflow state and approved knowledge, and supports semantic retrieval through embedding generation and vector indexing.
+
+\vspace{0.4cm}
+
+A central design principle is separation of concerns.  
+Governance oriented workflow functions (review, approval, apply, auditability) are isolated from retrieval oriented runtime functions (query embedding, search, context assembly, response generation).
+This separation improves maintainability, makes access control enforcement clearer, and reduces coupling between editorial workflow changes and retrieval behavior.
+
+\vspace{0.4cm}
+
+In the implemented architecture, approved content is persisted as markdown in the raw knowledge base, then indexed into Chroma through background reindexing.
+At query time, the chat service executes vector-first retrieval with lexical fallback, then generates grounded answers with source references.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{Figures/architecture-diagram.png}
+    \caption{Simplified system architecture of the AI assisted knowledge bank solution, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+    \label{fig:system_architecture}
+\end{figure}
+
+Figure~\ref{fig:system_architecture} also illustrates the overall component structure and the main interaction boundaries between the frontend, backend services, and storage/model infrastructure.
+
+Approved documents are stored in the knowledge base, indexed in Chroma, and retrieved using vector-first behavior with lexical fallback.
+
+The architecture further shows how governance-oriented workflow services and retrieval-oriented chat services are connected while remaining logically separated.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{Figures/vector_db_overview.png}
+    \caption{Vector database overview showing indexing and retrieval flow, Created using PlantUML Editor\cite{PlantUML_Editor}. Approved knowledge is converted to embeddings, stored in Chroma, and used for semantic retrieval during chat interactions.}
+    \label{fig:vector_db_overview}
+\end{figure}
+
+Figure~\ref{fig:vector_db_overview} highlights also the indexing and retrieval mechanism that supports semantic search.
+
+This flow is essential for knowledge chat functionality, because it enables similarity-based retrieval of relevant content before answer generation.
+
+\newpage
+\subsection{Use Case Diagram}
+
+The use case modeling process began with an initial sketch and was revised to improve correctness and role separation.
+
+In the first version, "Update Knowledge Base" was modeled as an umbrella use case.
+
+After analysis, this abstraction was replaced by explicit functional use cases to better represent real workflow behavior and dependencies.
+
+\vspace{0.3cm}
+
+In the final design, the Expert User performs upload, parsing/normalization, suggestion generation, review, approval/rejection, and save operations.
+
+The Employee role is intentionally limited to lower-risk interactions such as reading knowledge and basic upload access.
+
+External actors, including language model services, document sources, and repository/storage services, are included to clarify system boundaries.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Figures/Use_case_diagram0.png}
+  \caption{Use case diagram, first sketch.}
+  \label{fig:use_case_initial}
+\end{figure}
+
+Figure~\ref{fig:use_case_initial} reflects the initial conceptual model and captures the first attempt to represent the workflow scope.
+
+Its main limitation was insufficient separation of concrete use cases and actor responsibilities.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\linewidth]{Figures/Use_case_diagram.png}
+  \caption{Use case diagram, revised structure.}
+  \label{fig:use_case_revised}
+\end{figure}
+
+Figure~\ref{fig:use_case_revised} introduces a clearer functional decomposition and more appropriate relationship modeling.
+
+This revision improved consistency between use cases and implementation planning.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/Use case diagram - last update.png}
+  \caption{Use case diagram, update version, Created using Enterprise Architect\cite{Enterprise_Architect}.}
+  \label{fig:use_case_final}
+\end{figure}
+
+Figure~\ref{fig:use_case_final} presents the final role-aware interaction model with explicit workflow steps and system boundaries.
+
+Compared with earlier versions, it provides stronger clarity regarding responsibility, sequence intent, and external integration points.
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{Figures/usecase_diagram_updated.png}
+    \caption{Updated use case diagram for the AI Agent and Process Knowledge Base. Following the latest meeting with Glencore, the model was refined to include an additional employee capability: (Report Issue / Feedback). This update reflects the requirement that employee users should not only read approved knowledge content in HTML form, but also be able to report incorrect, outdated, or unclear information for further expert review. Created using Enterprise Architect\cite{Enterprise_Architect}.}
+    \label{fig:usecase-updated}
+\end{figure}
+
+\subsection{Class Diagram}
+
+The class diagram defines the static structure of the solution and clarifies relationships between service classes and domain entities.
+
+As with the use case model, the class design evolved from an initial sketch to a refined version aligned with role boundaries and workflow responsibilities.
+
+In the final model, responsibilities are separated across upload handling, parsing/normalization, suggestion generation, review/approval, persistence of approved updates, and knowledge presentation/retrieval.
+
+Domain entities include documents, normalized documents, suggestions, review outcomes, and update packages.
+
+Associations and multiplicities describe how multiple objects are handled across the workflow while preserving traceability.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/Class_diagram.png}
+  \caption{Class diagram, first sketch.}
+  \label{fig:class_initial}
+\end{figure}
+
+Figure~\ref{fig:class_initial} captures the initial structural model and early class responsibilities.
+
+The diagram was useful as a starting point, but required refinement to better reflect access control and service boundaries.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/Class diagram - Last update.png}
+  \caption{Class diagram, final version, Created using Enterprise Architect\cite{Enterprise_Architect}.}
+  \label{fig:class_final}
+\end{figure}
+
+Figure~\ref{fig:class_final} shows the final structural design with clearer class roles and better alignment to the final use case model.
+
+This final class model provides a consistent base for implementation and test-case mapping.
+
+\subsection{Sequence Diagrams}
+
+The sequence diagrams document dynamic system behavior by showing interaction order and timing across actors and services.
+
+While class diagrams describe structure, sequence diagrams verify runtime coordination and operational flow.
+
+The sequence diagrams cover six representative scenarios that together illustrate the complete workflow of the system.
+
+Sequence 1 models knowledge reading. Sequence 2 models review operations with authentication checks. Sequence 3 models document upload. Sequence 4 models parsing and normalization.
+Sequence 5 models AI-based suggestion generation. Sequence 6 models persistence of approved changes.
+
+\subsubsection*{Seq 1: Read Knowledge (HTML)}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.75\linewidth]{Figures/Seq 1 Read Knowledge (HTML).png}
+  \caption{Sequence 1: Read Knowledge (HTML), Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:seq1_read}
+\end{figure}
+
+Figure~\ref{fig:seq1_read} represents the read-only retrieval interaction between user-facing service layers and storage.
+
+It validates the simplest runtime path and establishes baseline behavior for knowledge access.
+
+\subsubsection*{Seq 2: Review Suggestions (Including Login)}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\linewidth]{Figures/Seq 2 Review Suggestions (includes Login).png}
+  \caption{Sequence 2: Review Suggestions (includes Login), Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:seq2_review}
+\end{figure}
+
+Figure~\ref{fig:seq2_review} shows how authentication and review logic are coupled during decision workflows.
+
+This sequence confirms that sensitive review actions are protected by session validation before state transition.
+
+\subsubsection*{Seq 3: Upload Documents}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Figures/Seq 3 Upload Documents.png}
+  \caption{Sequence 3: Upload Documents, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:seq3_upload}
+\end{figure}
+
+Figure~\ref{fig:seq3_upload} describes entry of source material into the workflow pipeline.
+
+It demonstrates how document objects are initialized and prepared for subsequent processing stages.
+
+\subsubsection*{Seq 4: Parse and Normalize}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Figures/Seq 4 Parse and Normalize.png}
+  \caption{Sequence 4: Parse and Normalize, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:seq4_parse}
+\end{figure}
+
+Figure~\ref{fig:seq4_parse} models transformation of raw uploaded input into normalized internal representation.
+
+This stage is critical because downstream suggestion quality depends on consistent preprocessed content.
+
+\subsubsection*{Seq 5: Generate Update Suggestions (LLM)}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Figures/Seq 5 Generate Update Suggestions (LLM).png}
+  \caption{Sequence 5: Generate Update Suggestions (LLM), Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:seq5_generate}
+\end{figure}
+
+Figure~\ref{fig:seq5_generate} illustrates AI-assisted suggestion generation from normalized input and contextual prompt construction.
+
+The sequence confirms that generation is integrated as an advisory step rather than a direct publication mechanism.
+
+\subsubsection*{Seq 6: Save Updates to Repository}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\linewidth]{Figures/Seq 6 Save Updates to Repository.png}
+  \caption{Sequence 6: Save Updates to Repository, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:seq6_save}
+\end{figure}
+
+Figure~\ref{fig:seq6_save} presents persistence behavior for approved outputs and rejection handling for non-approved suggestions.
+
+This sequence validates controlled update application and explicit audit oriented state handling.
+
+\vspace{0.2cm}
+
+Together, these diagrams demonstrate that the architecture is both structurally coherent and operationally consistent.
+
+They establish traceability between requirements, design decisions, and runtime behavior, and provide a direct foundation for the implementation presented in Section 4.3.
+
+
+
+\subsubsection*{As-built Sequence Diagrams (Implemented Runtime)}
+
+To complement the six design level sequence diagrams, the implemented system is represented through four integrated as-built sequences.
+This reduction from six to four is intentional: several design time steps (for example parsing, normalization, and suggestion generation) execute as parts of the same runtime API transaction and background task chain, rather than as fully separate interaction sessions.
+
+\vspace{0.4cm}
+
+The as-built sequences therefore capture how the system actually operates at endpoint and service level: request handling in FastAPI, persistence of workflow state in SQLite, controlled review/apply transitions with role-based authorization, asynchronous suggestion generation, and automatic re-indexing after approved updates.
+They also show the retrieval path used in production behavior, where vector search is primary and lexical fallback is applied when semantic retrieval is unavailable or insufficient.
+
+\vspace{0.4cm}
+
+Together, these four diagrams provide an implementation faithful view of orchestration, timing, and responsibility boundaries across user actions, backend services, model calls, and storage/index components.
+This makes them suitable for validating runtime behavior against both the architectural design and the functional/non-functional requirements defined earlier in the chapter.
+
+\subsubsection*{As-built Seq 1: Search Knowledge (Vector Search)}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Figures/Seq 1_as_built.png}
+  \caption{As-built Seq 1: Search Knowledge (Vector Search), Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:asbuilt_seq1_search}
+\end{figure}
+
+Figure~\ref{fig:asbuilt_seq1_search} shows the implemented knowledge chat retrieval path.  
+The API generates an embedding, queries the vector store, and returns context to the language model, if vector context is insufficient, lexical fallback is used before final response generation.
+
+\subsubsection*{As-built Seq 2: Review Suggestions (Approve/Reject, Auth Protected)}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Figures/Seq 2_as_built.png}
+  \caption{As-built Seq 2: Review Suggestions (Approve/Reject, Auth Protected), Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:asbuilt_seq2_review}
+\end{figure}
+
+Figure~\ref{fig:asbuilt_seq2_review} models the implemented review workflow with explicit login and role validation.  
+Approve and reject decisions are persisted only after authorization checks, ensuring controlled state transitions for suggestion governance.
+
+\subsubsection*{As-built Seq 3: Upload Document + Async Draft Suggestion Generation}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\linewidth]{Figures/Seq 3_as_built.png}
+  \caption{As-built Seq 3: Upload Document + Async Draft Suggestion Generation, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:asbuilt_seq3_upload_async}
+\end{figure}
+
+Figure~\ref{fig:asbuilt_seq3_upload_async} captures the implemented ingestion path from document upload through parsing and persistence.  
+Draft suggestion generation is then executed asynchronously by a background worker, which updates the stored suggestion after model completion.
+
+\subsubsection*{As-built Seq 4: Apply Approved Suggestion + Automatic Re-index}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\linewidth]{Figures/Seq 4_as_built.png}
+  \caption{As-built Seq 4: Apply Approved Suggestion + Automatic Re-index, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:asbuilt_seq4_apply_reindex}
+\end{figure}
+
+Figure~\ref{fig:asbuilt_seq4_apply_reindex} shows the implementation path for publishing approved updates to the knowledge base.  
+After apply succeeds, re indexing is scheduled and executed in the background, including chunk embedding, vector upsert, and reindex status updates.
+
+\vspace{0.2cm}
+
+Together, the design level six sequences and as built four sequences provide complementary views of system behavior: conceptual process decomposition and implemented runtime orchestration.
+
+
+
+
+\newpage
+
+\section{Implementation}
+
+This section describes how the design presented in Section 4.2 was realized in code.
+The implementation follows the same architectural decomposition as the design model: 
+a FastAPI based backend organized by responsibility, explicit API contracts for client server interaction, a staged processing pipeline for document to knowledge transformation, and a model integration layer that separates generation and embedding concerns.
+
+The goal of the implementation was not only to deliver functional behavior, but also to preserve traceability, modularity, and operational robustness in a local PoC environment.
+
+\subsection{Backend Implementation}
+
+The backend was implemented as a modular FastAPI application with route level separation of domain responsibilities.
+Application startup is defined through a lifespan hook that initializes the workflow database schema, while global middleware and exception handlers provide consistent CORS behavior and standardized API error payloads.
+
+\vspace{0.3cm}
+
+This implementation choice was made to ensure deterministic request handling and to provide a uniform structure for both validation and domain level errors.
+
+At module level, the implementation follows a route-service-storage pattern.  
+Route modules under \texttt{app/routers} expose HTTP endpoints and perform request level orchestration, while domain logic is delegated to focused modules such as document parsing, AI generation wrappers, knowledge-base indexing, and workflow persistence.
+
+\vspace{0.3cm}
+
+Persistent state is separated by concern: relational workflow state is stored in SQLite tables, approved knowledge is stored as Markdown files, and semantic retrieval indices are maintained in Chroma.
+
+This separation directly reflects the class and sequence design decisions introduced in Section 4.2.
+
+\vspace{0.3cm}
+
+A central implementation decision was the use of background processing for long-running operations.  
+Document upload returns quickly with a draft state, while computationally expensive structuring and indexing operations are scheduled asynchronously through FastAPI background tasks.
+
+\vspace{0.3cm}
+
+This approach avoids blocking request-response cycles and improves perceived responsiveness at the API level.
+
+\begin{listing}[H]
+\begin{minted}[bgcolor=LightGray, linenos, breaklines=true]{python}
+@router.post("/suggestions/{suggestion_id}/apply", response_model=ApplyResponse)
+def apply_suggestion(...):
+    _require_expert_user(authorization)
+    ...
+    reindex_run_id = _mark_reindex_scheduled(reason="workflow.apply_suggestion")
+    background_tasks.add_task(_reindex_kb_to_chroma, reindex_run_id)
+\end{minted}
+\caption{Apply endpoint implementation showing authorization and asynchronous reindex scheduling.}
+\label{code:apply-reindex}
+\end{listing}
+
+
+
+\subsection{API Implementations}
+
+API implementation was organized around four interaction domains: authentication, document ingestion, workflow governance, and knowledge retrieval.
+
+\textbf{Authentication} endpoints implement login, refresh, verify, and logout flows using hashed token storage and expiry validation.
+
+\textbf{Document ingestion} endpoints handle upload and initial draft creation.
+
+\textbf{Workflow} endpoints implement review and apply transitions with explicit state validation and expert role authorization checks.
+
+\textbf{Knowledge} endpoints expose revision and chat functionality, while vector endpoints provide explicit indexing and search operations for diagnostics and testing.
+
+To maintain clear and stable contracts between frontend and backend, the implementation uses strongly typed request and response models defined through Pydantic schemas\cite{Pydantic_schemas}.
+This improves input validation, reduces ambiguity, and ensures consistent API behavior.  
+Table~\ref{tab:implemented_apis} summarizes the primary API surface used in the implemented system.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{5.0cm} p{1.5cm} p{9cm}}
+\textbf{Endpoint} & \textbf{Method} & \textbf{Implementation purpose} \\
+\hline
+\texttt{/api/auth/login} & POST & Creates access and refresh sessions using credential validation and token hashing. \\
+\hline
+\texttt{/api/auth/refresh} & POST & Rotates tokens and updates session expiry windows. \\
+\hline
+\texttt{/documents/upload} & POST & Stores source file, parses content, creates normalized record and draft suggestion. \\
+\hline
+\texttt{/workflow/suggestions
+/\{id\}/review} & POST & Records expert review decision and transitions suggestion status. \\
+\hline
+\texttt{/workflow/suggestions
+/\{id\}/apply} & POST & Writes approved content to KB, persists change metadata, and schedules reindexing. \\
+\hline
+\texttt{/workflow/kb/reindex-status} & GET & Exposes indexing state, timestamps, and error/completion metadata. \\
+\hline
+\texttt{/agent/revise} & POST & Produces controlled document revision output from instruction and source draft. \\
+\hline
+\texttt{/agent/knowledge-chat} & POST & Executes retrieval orchestration and grounded answer generation. \\
+\hline
+\texttt{/vector/index/kb} & POST & Rebuilds the vector index from the knowledge base corpus. \\
+\hline
+\texttt{/vector/search} & GET & Executes semantic similarity search over indexed chunks. \\
+\hline
+\end{tabular}
+\caption{Primary implemented API endpoints and their technical purpose.}
+\label{tab:implemented_apis}
+\end{table}
+
+
+\subsection{Data Flow and Processing Pipeline}
+
+The implemented pipeline operationalizes the design decisions from Section 4.2 by transforming source documents into governed, retrievable knowledge. The system follows a staged processing model that combines automated transformation with explicit human validation before knowledge is published and indexed.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.5\linewidth]{Figures/work-flow_0.png}
+  \caption{End-to-end workflow illustrating document ingestion, AI-assisted suggestion generation, human validation, application to the knowledge base, and background re-indexing for retrieval, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+  \label{fig:workflow-mvp}
+\end{figure}
+
+As illustrated in Figure~\ref{fig:workflow-mvp}, the workflow begins with document ingestion and progresses through AI-assisted structuring, expert review, and controlled publication to the knowledge base.
+
+\vspace{0.4cm}
+
+While Figure~\ref{fig:workflow-mvp} presents the macro level process, Figure~\ref{fig:data_flow_impl} details how data objects and state transitions move across implementation components.
+
+\vspace{0.4cm}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{Figures/data_flow_diagram.png}
+\caption{Data flow of the implemented AI-assisted knowledge system, from document upload and parsing to governed approval, re-indexing, and query-time response generation, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+\label{fig:data_flow_impl}
+\end{figure}
+
+The flow begins when a document is uploaded and stored in the uploads area. Within the same request context, the system parses the content according to file type, stores normalized text, and creates an initial suggestion record with draft status. If extracted content is non empty, AI structuring is executed asynchronously and the suggestion record is updated with model generated content.
+
+After generation, the workflow enters a human validation stage. An expert user reviews the suggestion and explicitly marks it as approved or rejected. Only approved suggestions are eligible for application. During the apply step, the system writes the final Markdown document to the knowledge base, records an applied-change entry in SQLite, and updates the workflow state accordingly.
+
+\vspace{0.4cm}
+
+Indexing is triggered immediately after application through a background reindex task. The indexer scans approved Markdown files, extracts metadata and content, splits text into chunks, generates embeddings, and upserts vectors into Chroma\cite{Vector_Database}. A dedicated status object tracks indexing runs, timestamps, and errors, allowing progress to be monitored through API endpoints.
+
+\vspace{0.4cm}
+
+At query time, the system executes retrieval and generation through a structured pipeline, as shown in Figure~\ref{fig:retrieval_pipeline_impl}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\linewidth]{Figures/retrieval_pipeline_diagram.png}
+\caption{Retrieval pipeline of the implemented system using vector-first search with lexical fallback and grounded answer generation with source references, Created using PlantUML Editor\cite{PlantUML_Editor}.}
+\label{fig:retrieval_pipeline_impl}
+\end{figure}
+
+The user query is first embedded and used for vector-based similarity search in Chroma. If vector retrieval is unavailable or insufficient, lexical search over the knowledge base is used as fallback. Retrieved context is then assembled into a grounded prompt for language model generation, and the final response is returned together with source references.
+
+\vspace{0.3cm}
+
+This pipeline ensures that knowledge updates remain controlled and traceable, while retrieval remains robust through vector first search with lexical fallback and continuously synchronized indexing of approved knowledge.
+
+
+
+
+\subsection{Model Integration and Selection}
+
+Model integration was implemented through two decoupled components: generation and embedding.  
+Generation is handled by an Ollama based \cite{Ollama} provider that exposes configurable parameters such as model name, timeout, retry count, and output length through environment variables.
+Embedding is handled by a separate client targeting the Ollama embeddings endpoint, allowing the retrieval subsystem to evolve independently from generation settings.
+
+\vspace{0.4cm}
+
+This separation avoids tight coupling between generation and retrieval behavior.  
+In practice, these components have different performance characteristics and failure modes, and therefore require independent configuration strategies.
+Timeout and retry mechanisms are implemented in both paths to improve robustness during local execution.
+
+\vspace{0.4cm}
+
+The selected setup uses a local generation model for answer synthesis and (nomic-embed-text) for embedding generation.
+This configuration was chosen to support local deployment, reduce operational cost, and maintain control over data processing.  
+Although cloud-based alternatives were considered, the local first approach was prioritized due to privacy, reproducibility, and resource constraints within the PoC environment.
+
+\begin{listing}[H]
+\begin{minted}[bgcolor=LightGray, linenos, breaklines=true]{python}
+class OllamaProvider:
+    def generate(self, prompt: str, *, options: dict | None = None) -> str:
+        ...
+        response = self._request_generate(prompt, options_override=options)
+        response.raise_for_status()
+        return response.json()["response"]
+\end{minted}
+\caption{Generation integration via configurable Ollama provider abstraction.}
+\label{code:ollama-provider-generate}
+\end{listing}
+
+The implementation preserves alignment with the architecture and UML models by maintaining explicit module boundaries, state aware workflow transitions, asynchronous execution for computationally intensive tasks, and retrieval orchestration that combines semantic and lexical strategies.
+
+
+
+\vspace{1cm}
+
+\section{Validation Method and Test Setup}
+
+The purpose of validation in this project is to demonstrate that the implemented system satisfies the requirements defined in Section 4.1 and behaves consistently under realistic execution conditions, building directly on the design and implementation described in Sections 4.2 and 4.3. Validation was treated as a traceability process, where each requirement was linked to one or more verifiable test cases. This approach was selected to avoid purely descriptive evaluation and to provide evidence-based confirmation of both functional behavior and quality attributes.
+
+\vspace{0.4cm}
+
+The validation design follows the architectural and implementation choices presented earlier. Since the system combines workflow governance, API driven interactions, asynchronous indexing, and AI assisted retrieval, a single validation approach was insufficient. The final method therefore combines automated backend tests with scenario based API verification. This combination supports both internal correctness checks and end-to-end behavior validation across component boundaries.
+
+
+
+\subsection{Testing Strategy}
+
+The testing strategy was implemened as a layered validation model with three complementary levels: unit oriented behavioral checks, integration level API validation, and end-to-end scenario execution. At the first level, automated tests were used to validate isolated logic with controlled inputs and deterministic assertions. At the second level, endpoint interactions were verified through realistic request response flows, including state transitions in the workflow database and persistence effects in the knowledge base. At the third level, complete user-relevant scenarios were executed from document upload to retrievable chat response.
+
+\vspace{0.4cm}
+
+This strategy was chosen because the system is workflow driven and API centric. Functional correctness depends not only on individual functions, but also on state transitions between upload, review, approval, apply, and retrieval. In addition, non-functional qualities such as reliability and traceability depend on cross module behavior, including background indexing status and error handling under model/runtime constraints.
+
+\vspace{0.4cm}
+
+Functional validation focused on requirement conformance for core operations, including upload processing, expert only approval, apply consistency, indexing orchestration, and retrieval path selection. Non-functional validation focused on reliability under timeout conditions, persistence consistency between storage layers, and operational traceability through explicit status and audit artifacts. The resulting methodology supports both requirement coverage and implementation realism.
+
+
+\subsection{Test Cases and Requirements Mapping}
+
+To make validation measurable, each test case was defined with a requirement reference, a concrete execution target, and an expected outcome. The table below documents the requirement to test traceability used in this project.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{1.5cm} p{1.5cm} p{6.4cm} p{5.5cm}}
+\textbf{Req. ID} & \textbf{Test Case} & \textbf{Description} & \textbf{Expected Outcome} \\
+\hline
+FR1 & TC-01 & Submit document through upload endpoint and persist source artifact. & Upload returns identifiers; file is stored and workflow records are created. \\
+\hline
+FR2 & TC-02 & Parse and normalize uploaded content before suggestion pipeline execution. & Normalized text is persisted; unsupported formats are rejected with validation error. \\
+\hline
+FR4 & TC-03 & Execute review transition on draft suggestion with valid expert authorization. & Review decision is stored and suggestion status transitions to approved or rejected. \\
+\hline
+FR5 & TC-04 & Call review/apply endpoints without valid expert role. & Request is rejected with authorization error (401/403); no state change occurs. \\
+\hline
+FR6 & TC-05 & Apply approved suggestion to knowledge base using explicit or generated target path. & Markdown is written, applied change is persisted, suggestion status becomes applied. \\
+\hline
+FR6, NFR3 & TC-06 & Apply consistency validation for invalid path, conflict path, and persistence fields. & Invalid path returns 400; existing explicit path returns 409; persisted state/path remain consistent. \\
+\hline
+FR7 & TC-07 & Query knowledge chat and verify response format with source metadata. & Response contains answer and source objects; source metadata is returned in stable schema. \\
+\hline
+FR8 & TC-08 & Retrieval routing validation for vector-first and lexical fallback behavior. & Vector source is preferred when available; lexical route is used when vector path is unavailable. \\
+\hline
+FR9, NFR4 & TC-09 & Poll reindex status endpoint before and after apply-triggered indexing. & Status exposes run state, timestamps, counters, and failure reason when applicable. \\
+\hline
+NFR1 & TC-10 & Verify auditability of review and apply events in persistent workflow records. & Review/applied records are queryable and linked to suggestion lifecycle identifiers. \\
+\hline
+NFR2 & TC-11 & Trigger generation/embedding under constrained runtime and observe timeout handling. & Controlled fallback behavior is returned; process does not crash; status and error remain observable. \\
+\hline
+NFR8 & TC-12 & Execute full pipeline in local environment without mandatory cloud dependencies. & Core workflow and retrieval complete using local runtime stack. \\
+\hline
+\end{tabular}
+\caption{Requirement-to-test traceability used for validation.}
+\label{tab:req_test_mapping}
+\end{table}
+
+The most critical automated evidence was produced by focused backend tests for apply consistency and retrieval behavior. Apply consistency tests verified path safety, conflict handling, and state persistence after approval and apply transitions. Retrieval tests verified that the chat component follows vector-first semantics with lexical fallback under unavailable-vector conditions. In addition to automated checks, scenario based API executions were used to validate the full operational path from upload to indexed retrieval.
+
+\subsection{Validation Environment and Tools}
+
+Validation was performed in a local development environment to match the intended PoC execution model. The backend stack used Python with FastAPI, SQLite for workflow persistence, c  based raw knowledge storage, Chroma as persistent vector store, and a local Ollama runtime for generation and embedding endpoints. The model path used local generation and embedding services, which allowed controlled observation of timeout behavior, indexing flow, and retrieval orchestration without external API dependency.
+
+\vspace{0.4cm}
+
+Automated validation used \texttt{pytest} and FastAPI test client patterns for deterministic endpoint and state verification. Integration and scenario checks were executed through direct API calls and status polling to confirm asynchronous pipeline behavior, including apply triggered reindex runs and chat retrieval outcomes. Logs and structured API error payloads were used as secondary evidence to confirm failure-mode behavior and debugging traceability.
+
+\vspace{0.4cm}
+
+Reproducibility was supported by deterministic environment settings, explicit endpoint contracts, and isolated test setup patterns. Workflow database tests were executed with controlled temporary database state, and result assertions were written against explicit status fields and persisted artifacts.
+This allowed repeated execution of the same validation scenarios with consistent pass/fail criteria and clear linkage to requirement identifiers.

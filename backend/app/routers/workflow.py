@@ -509,7 +509,10 @@ def get_suggestion_similarity(
         default=None,
         description="Optional relative path under databases/knowledge_base/raw to exclude from matching.",
     ),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> SimilarityResponse:
+    _require_expert_user(authorization)
+
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -775,7 +778,7 @@ def report_kb_issue(
 ) -> KbIssueReportResponse:
     reported_by, reported_role = _require_authenticated_user(
         authorization,
-        allowed_roles={"employee", "expert", "admin"},
+        allowed_roles={"expert", "admin"},
     )
 
     report_id = str(uuid.uuid4())
@@ -1425,7 +1428,12 @@ def apply_suggestion(
 
 
 @router.delete("/suggestions/{suggestion_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_suggestion(suggestion_id: str) -> Response:
+def delete_suggestion(
+    suggestion_id: str,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Response:
+    _require_expert_user(authorization)
+
     with get_connection() as conn:
         existing = conn.execute(
             "SELECT suggestion_id FROM suggestions WHERE suggestion_id = ?",

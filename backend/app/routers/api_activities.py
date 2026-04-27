@@ -3,10 +3,11 @@ from __future__ import annotations
 import uuid
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.workflow_db.db import get_connection
+from app.routers.workflow_helpers import _require_authenticated_user, _require_expert_user
 
 router = APIRouter(prefix="/api/activities", tags=["api-activities"])
 
@@ -136,7 +137,10 @@ def _backfill_activities_if_empty(conn) -> None:
 def list_activities(
     limit: int = Query(default=10, ge=1, le=100),
     user: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> list[ActivityOut]:
+    _require_authenticated_user(authorization, allowed_roles={"employee", "expert", "admin"})
+
     query = """
         SELECT id, type, title, description, user, time, document_id
         FROM activities
@@ -159,7 +163,12 @@ def list_activities(
 
 
 @router.post("", response_model=ActivityOut, status_code=status.HTTP_201_CREATED)
-def create_activity(payload: ActivityCreateRequest) -> ActivityOut:
+def create_activity(
+    payload: ActivityCreateRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> ActivityOut:
+    _require_expert_user(authorization)
+
     activity_id = str(uuid.uuid4())
     time_value = payload.time or "nå"
 

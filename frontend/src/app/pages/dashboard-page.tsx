@@ -4,14 +4,40 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { useDocuments } from "@/app/context/documents-context";
 import { activityService } from "@/services";
+import { documentService } from "@/services/documentService";
+import { useAuth } from "@/app/context/auth-context";
 import type { Activity } from "@/types";
+import { canAccessExpertFeatures } from "@/utils/role-access";
 
 export function DashboardPage() {
   const navigate = useNavigate();
-  const { documents, getPendingDocuments } = useDocuments();
+  const { user } = useAuth();
+  const { getPendingDocuments } = useDocuments();
   const [activities, setActivities] = useState<Activity[]>([]);
   const [activitiesLoading, setActivitiesLoading] = useState(true);
   const [activitiesError, setActivitiesError] = useState<string | null>(null);
+  const [kbTotalCount, setKbTotalCount] = useState<number>(0);
+
+  const expertAccess = canAccessExpertFeatures(user?.role);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const stats = await documentService.getKnowledgeBankStats();
+        if (cancelled) return;
+        setKbTotalCount(stats.total || 0);
+      } catch {
+        if (cancelled) return;
+        setKbTotalCount(0);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -42,40 +68,63 @@ export function DashboardPage() {
   }, []);
   
   const pendingCount = getPendingDocuments().length;
-  const totalDocumentsCount = documents.length;
+  const visibleTotalDocs = kbTotalCount;
   
-  const stats = [
-    {
-      label: "Hvordan fungerer det?",
-      value: "",
-      subtitle: "Lær om KI-systemet",
-      icon: Info,
-      iconColor: "text-[#475834]",
-      iconBg: "bg-[#475834]/10",
-      clickable: true,
-      action: () => navigate("/upload"),
-    },
-    {
-      label: "Venter Godkjenning",
-      value: pendingCount.toString(),
-      subtitle: "",
-      icon: Clock,
-      iconColor: "text-[#82131E]",
-      iconBg: "bg-[#82131E]/10",
-      clickable: true,
-      action: () => navigate("/queue"),
-    },
-    {
-      label: "Totalt Dokumenter",
-      value: totalDocumentsCount.toLocaleString("nb-NO"),
-      subtitle: "",
-      icon: FileText,
-      iconColor: "text-[#764484]",
-      iconBg: "bg-[#764484]/10",
-      clickable: true,
-      action: () => navigate("/knowledge-bank"),
-    },
-  ];
+  const stats = expertAccess
+    ? [
+        {
+          label: "Hvordan fungerer det?",
+          value: "",
+          subtitle: "Lær om KI-systemet",
+          icon: Info,
+          iconColor: "text-[#475834]",
+          iconBg: "bg-[#475834]/10",
+          clickable: true,
+          action: () => navigate("/upload"),
+        },
+        {
+          label: "Venter Godkjenning",
+          value: pendingCount.toString(),
+          subtitle: "",
+          icon: Clock,
+          iconColor: "text-[#82131E]",
+          iconBg: "bg-[#82131E]/10",
+          clickable: true,
+          action: () => navigate("/queue"),
+        },
+        {
+          label: "Totalt Dokumenter",
+          value: visibleTotalDocs.toLocaleString("nb-NO"),
+          subtitle: "",
+          icon: FileText,
+          iconColor: "text-[#764484]",
+          iconBg: "bg-[#764484]/10",
+          clickable: true,
+          action: () => navigate("/knowledge-bank"),
+        },
+      ]
+    : [
+        {
+          label: "Hvordan fungerer systemet?",
+          value: "",
+          subtitle: "Søk i kunnskapsbank og les godkjente dokumenter",
+          icon: Info,
+          iconColor: "text-[#475834]",
+          iconBg: "bg-[#475834]/10",
+          clickable: false,
+          action: undefined,
+        },
+        {
+          label: "Totalt Dokumenter",
+          value: visibleTotalDocs.toLocaleString("nb-NO"),
+          subtitle: "I kunnskapsbanken",
+          icon: FileText,
+          iconColor: "text-[#00AFAA]",
+          iconBg: "bg-[#00AFAA]/10",
+          clickable: true,
+          action: () => navigate("/files"),
+        },
+      ];
 
   return (
     <div className="flex h-screen bg-white">
@@ -89,7 +138,7 @@ export function DashboardPage() {
         <div className="flex-1 overflow-auto px-6 pb-4">
           <div className="flex flex-col gap-4 pt-4">
             <div className="bg-white border border-white">
-              <div className="grid grid-cols-3 gap-6 pt-6 px-6 mb-6">
+              <div className={`grid gap-6 pt-6 px-6 mb-6 ${stats.length === 2 ? "grid-cols-2" : "grid-cols-3"}`}>
                 {stats.map((stat, index) => (
                   <div
                     key={index}

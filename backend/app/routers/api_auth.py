@@ -23,7 +23,7 @@ PASSWORD_HASH_ITERATIONS = int(os.getenv("AUTH_PASSWORD_HASH_ITERATIONS", "15000
 
 DEFAULT_USERNAME = os.getenv("AUTH_DEFAULT_USERNAME", "admin")
 DEFAULT_PASSWORD = os.getenv("AUTH_DEFAULT_PASSWORD", "admin123")
-DEFAULT_DISPLAY_NAME = os.getenv("AUTH_DEFAULT_DISPLAY_NAME", "System Admin")
+DEFAULT_DISPLAY_NAME = os.getenv("AUTH_DEFAULT_DISPLAY_NAME", "Systemadministrator")
 DEFAULT_EMAIL = os.getenv("AUTH_DEFAULT_EMAIL", DEFAULT_USERNAME)
 if "@" not in DEFAULT_EMAIL:
     DEFAULT_EMAIL = "expert@glencore.com"
@@ -33,7 +33,7 @@ DEFAULT_VIEWER_EMAIL = os.getenv("AUTH_VIEWER_EMAIL", "viewer@glencore.com")
 if "@" not in DEFAULT_VIEWER_EMAIL:
     DEFAULT_VIEWER_EMAIL = "viewer@glencore.com"
 DEFAULT_VIEWER_PASSWORD = os.getenv("AUTH_VIEWER_PASSWORD", "viewer123")
-DEFAULT_VIEWER_DISPLAY_NAME = os.getenv("AUTH_VIEWER_DISPLAY_NAME", "Viewer User")
+DEFAULT_VIEWER_DISPLAY_NAME = os.getenv("AUTH_VIEWER_DISPLAY_NAME", "Seerbruker")
 DEFAULT_VIEWER_ROLE = os.getenv("AUTH_VIEWER_ROLE", "user")
 
 Role = Literal["admin", "reviewer", "user", "expert", "employee"]

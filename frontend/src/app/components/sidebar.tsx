@@ -12,6 +12,13 @@ export function Sidebar() {
 
   const pendingCount = getPendingDocuments().length;
   const role = normalizeUserRole(user?.role);
+  const roleLabel = role === "expert" ? "Ekspert" : role === "employee" ? "Ansatt" : role || "Ansatt";
+  const displayName =
+    user?.name === "System Admin"
+      ? "Systemadministrator"
+      : user?.name === "Viewer User"
+        ? "Seerbruker"
+        : user?.name || "Ekspert Bruker";
   const expertAccess = canAccessExpertFeatures(role);
 
   const menuItems = expertAccess
@@ -22,7 +29,11 @@ export function Sidebar() {
         { path: "/knowledge-bank", label: "Kunnskapsbank", icon: FileText },
         { path: "/files", label: "Filer", icon: Database },
       ]
-    : [{ path: "/knowledge-bank", label: "Kunnskapsbank", icon: FileText }];
+    : [
+        { path: "/dashboard", label: "Oversikt", icon: LayoutGrid },
+        { path: "/knowledge-bank", label: "Kunnskapsbank", icon: FileText },
+        { path: "/files", label: "Filer", icon: Database },
+      ];
 
   const handleLogout = () => {
     logout();
@@ -81,8 +92,8 @@ export function Sidebar() {
             <span className="text-white text-sm font-bold">{user?.initials || "EB"}</span>
           </div>
           <div className="flex-1">
-            <p className="text-base text-[#000000] font-medium leading-tight">{user?.name || "Ekspert Bruker"}</p>
-            <p className="text-sm text-[#000000]/60 font-normal leading-tight">{role || "employee"}</p>
+            <p className="text-base text-[#000000] font-medium leading-tight">{displayName}</p>
+            <p className="text-sm text-[#000000]/60 font-normal leading-tight">{roleLabel}</p>
           </div>
         </div>
         <button

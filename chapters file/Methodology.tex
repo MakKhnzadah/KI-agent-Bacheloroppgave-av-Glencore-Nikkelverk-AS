@@ -1,0 +1,194 @@
+\chapter{Methodology}
+
+This chapter explains how the project was conducted and why the selected methodological choices were appropriate for the research context.
+The methodological design combines iterative software development, stakeholder driven refinement, and controlled validation in a Proof of Concept (PoC) setting.
+
+The chapter focuses on how the work was performed, how decisions were justified, and how evidence was collected.
+Detailed architecture and implementation are presented in later chapters, while this chapter establishes the methodological logic behind those outcomes.
+
+\section{Development Approach (Agile and Iterative Development)}
+
+The project followed an Agile and iterative development approach, as requirements evolved during the project period through continuous feedback from stakeholders and the academic supervisor \cite{agile_manifesto}.
+This choice was not only practical but methodological: AI assisted systems involve technical uncertainty, where output quality and integration behavior are not fully predictable at project start.
+
+A plan-driven approach such as Waterfall was considered less suitable.
+Waterfall assumes stable, fully specified requirements and low discovery during execution, while this project required repeated adjustments related to workflow governance, retrieval behavior, model reliability, and operational constraints.
+
+\vspace{0.4cm}
+
+An MVP strategy was used to establish a functional baseline early.
+After baseline stability was reached, additional functionality was introduced incrementally in short cycles.
+Each cycle included planning, implementation, verification, and review.
+This structure enabled early detection of integration issues and reduced the risk of late-stage redesign.
+
+The iterative process also improved traceability.
+Design and code changes were linked to specific requirements and observed behavior, making it possible to justify why features were added, modified, or deferred during the PoC period.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\linewidth]{Figures/Agile_Methodology1.png}
+\caption{Agile development lifecycle illustrating iterative and cyclic process stages \cite{GeeksforGeeks2025Jul}.}
+\label{fig:agile_model}
+\end{figure}
+
+As illustrated in Figure~\ref{fig:agile_model}, the Agile lifecycle follows a cyclic process consisting of requirement definition, design, implementation, testing, and review phases\cite{agile_manifesto}.
+In this project, each cycle produced a verifiable functional increment, which supported continuous alignment between project goals and implemented system behavior.
+
+\section{Requirements Engineering and Prioritization Strategy}
+
+Requirements engineering was treated as a methodological activity, not only a documentation step.
+Before detailed design and coding, the project established a requirement baseline to define scope boundaries, quality expectations, and validation criteria for the PoC.
+The baseline was then refined iteratively as implementation feedback exposed practical constraints related to runtime behavior, data quality, and integration complexity.
+
+\vspace{0.4cm}
+
+To keep requirements testable and traceable, each requirement was assigned a unique identifier and grouped into two categories:
+\textbf{functional requirements} (what the system must do) and \textbf{non-functional requirements} (how reliably and safely the system must operate).
+This distinction was methodologically important because the project objective was not only to implement features, but to demonstrate governed and dependable workflow behavior.
+
+\vspace{0.4cm}
+
+Prioritization was managed using a MoSCoW strategy in each iteration.
+Requirements that directly enabled an end-to-end governed workflow (upload, review, approval, apply, retrievable knowledge) were treated as \textit{Must have}.
+Requirements improving robustness and observability (for example fallback retrieval and indexing visibility) were treated as \textit{Should have}.
+Lower-impact extensions were classified as \textit{Could have}, while out-of-scope enterprise-scale items were documented as \textit{Won't have (for now)}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\linewidth]{Figures/MoSCoW prioritization.png}
+\caption{MoSCoW prioritization model showing classification of requirements based on importance \cite{KECG2023MoSCoW}.}
+\label{fig:moscow}
+\end{figure}
+
+As shown in Figure~\ref{fig:moscow}, this method provided explicit scope control under limited thesis time and resource constraints.
+Methodologically, it improved decision transparency because implementation order could be justified by requirement criticality instead of ad hoc coding preference.
+
+\section{System Approach and Processing Strategy}
+
+The system was developed using a staged processing strategy in which data passes through explicitly defined transformation and validation stages.
+Methodologically, this was selected to improve modularity, reproducibility, and control of state transitions.
+
+Rather than treating the platform as one monolithic process, the workflow was divided into bounded stages with explicit responsibilities and interfaces.
+This aligns with established pipeline oriented system design principles, where separation of concerns enables clearer testing boundaries and improves experimental control.
+
+\vspace{0.4cm}
+
+This strategy provides three methodological advantages.
+\textbf{First}, each stage can be validated independently before full integration.
+\textbf{Second}, progression between stages can be governed through explicit rules, supporting quality control and auditability.
+\textbf{Third}, failures in one stage can be isolated and handled without invalidating the entire workflow.
+
+From a research perspective, staged processing also improves reproducibility: similar inputs can be traced through the same defined sequence of steps, making outcomes easier to compare and interpret across iterations.
+
+\section{Human in the Loop Design Principle}
+
+A human in the loop principle was adopted as a central methodological decision.
+The AI component was used to generate structured suggestions, while final acceptance remained a human responsibility.
+
+This choice was motivated by domain requirements: in industrial knowledge environments, correctness, accountability, and trust are more important than full automation speed.
+The method therefore prioritizes assisted decision-making rather than autonomous decision-making.
+
+\vspace{0.4cm}
+
+Human review functions as a validation gate between AI generation and publication, reducing the risk of propagating incorrect or unverifiable content.
+This is consistent with governance-oriented and trustworthy AI practices, where human oversight is recommended to mitigate risks such as hallucination, weak grounding, and contextually inappropriate outputs \cite{EU_HLEG_2019}.
+
+In methodological terms, model output is treated as advisory evidence, while domain experts remain accountable for final state changes.
+
+\section{Tool Selection and Technical Rationale}
+
+Tool selection was guided by methodological and practical constraints: local execution, cost control, transparent data handling, reproducibility, and integration feasibility.
+The selected stack was intended to balance experimental flexibility with engineering realism.
+
+FastAPI was selected as backend framework because it supports modular API design, typed request validation, and clear service boundaries, which are beneficial for iterative development and controlled testing \cite{FastAPI}.
+A web frontend was used to support interactive review and retrieval in one user workflow.
+Workflow metadata and state transitions were persisted in a relational store, while semantic retrieval required vector indexing infrastructure \cite{Schwaber-Cohen2024Apr}.
+
+\vspace{0.4cm}
+
+A local model runtime was prioritized over commercial cloud APIs to reduce dependency on paid inference and to maintain control over sensitive processing contexts.
+This choice also improves reproducibility because runtime behavior is less exposed to external API changes, pricing constraints, and remote-service variability.
+
+Alternative configurations (larger hosted models, external APIs, and fully managed cloud stacks) were evaluated but not selected for the PoC due to trade-offs in cost, latency, operational complexity, and controllability.
+
+\section{Project Management and Workflow (Kanban)}
+
+Project execution was managed through a Kanban workflow in GitHub Projects \cite{kanban}.
+Tasks were represented as cards and moved across defined states (for example backlog, ready, in progress, review, and done) \cite{our_Kanban_workflow_in_GitHub}.
+This provided transparent progress tracking and dependency visibility.
+
+Kanban was preferred over sprint-based Scrum because task duration and priority changed dynamically due to research driven discovery and integration uncertainty.
+A continuous flow model was therefore more suitable than fixed length sprint commitments.
+
+\vspace{0.3cm}
+
+Kanban complemented iterative development by limiting work in progress and emphasizing completion before expansion.
+Requirement priority was operationalized through MoSCoW-inspired planning, where core requirements were implemented first and lower-priority features were deferred when necessary \cite{productplan_moscow}.
+Methodologically, this reduced scope drift and strengthened delivery discipline in the PoC setting.
+
+\section{Methodological Strengths and Limitations}
+
+The selected methodology has clear strengths.
+It supports adaptability under evolving requirements, enables early delivery of a functional baseline, and promotes continuous validation through short feedback loops.
+The staged processing strategy improves modular testing and traceability, while human in the loop review strengthens governance and trust.
+
+\vspace{0.3cm}
+
+The methodology also has limitations.
+Iterative development can introduce temporary architectural inconsistency when priorities shift rapidly.
+Local model execution constrains performance and may increase latency under heavier workloads.
+The evaluation relies partly on expert judgment, which introduces subjectivity.
+In addition, dataset diversity and project duration are limited, reducing generalizability beyond the PoC context.
+
+\vspace{0.3cm}
+
+Despite these limitations, the chosen method is considered appropriate for the thesis objective: developing and validating a robust, traceable, and practically relevant PoC under realistic academic and engineering constraints.
+
+\section{Evaluation Strategy}
+
+To evaluate the effectiveness of the proposed system, a qualitative and scenario-based evaluation strategy was applied.
+The purpose was to systematically assess whether the system supports reliable document processing, controlled knowledge updates, and grounded information retrieval in realistic use conditions.
+
+A qualitative strategy was selected because core success criteria include human interpretive judgment, governance behavior, and workflow correctness, which cannot be fully captured through isolated quantitative metrics.
+
+\vspace{0.4cm}
+
+This approach supports internal validity by ensuring that observed system behavior can be directly linked to predefined scenarios and explicit evaluation criteria.
+
+\vspace{0.4cm}
+
+Validation was implemented through a layered strategy combining focused automated tests and scenario-based API verification.
+At the first level, targeted backend tests validated isolated behaviors such as authorization rules, apply consistency, and retrieval fallback logic.
+At the second level, endpoint interactions were verified through realistic request-response flows with state transition checks.
+At the third level, end-to-end scenarios were executed from document upload to approved publication and searchable retrieval.
+
+\vspace{0.4cm}
+
+This layered setup was selected because correctness depends on both component-level logic and cross-component orchestration.
+In particular, requirements related to traceability, reliability, and observability can only be verified when workflow state, background indexing, and retrieval behavior are evaluated together.
+
+The evaluation addressed three dimensions:
+
+\vspace{0.4cm}
+\textbf{1) Suggestion quality.}
+
+Generated suggestions were reviewed by an expert user and compared against source documents.
+Assessment criteria included relevance (coverage of key source concepts), factual correctness, structural clarity, and usefulness for approval decisions.
+
+\textbf{2) Workflow correctness and traceability.}
+
+End-to-end scenarios verified that only authorized users could approve/apply changes, that workflow states transitioned correctly, and that approved changes were persisted and auditable.
+
+\textbf{3) Retrieval quality and runtime robustness.}
+
+Scenarios verified that answers were grounded in approved knowledge, included source references, and remained operational under practical conditions such as indexing delays, timeout cases, and fallback activation.
+
+\vspace{0.5cm}
+
+Evaluation evidence was collected through manual inspection, structured scenario execution, endpoint level verification, and continuous observation during development iterations.
+Results are presented in Chapter 4 together with requirement-traceable interpretation.
+
+The evaluation has known limitations: it is not based on large benchmark datasets, and several judgments are expert dependent.
+However, for a governance-oriented PoC, this strategy provides relevant and credible evidence of whether the integrated system behavior meets the intended objectives.
+
+External validity is limited, as results are derived from a constrained PoC environment and may not fully generalize to large scale production settings.
